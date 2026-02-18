@@ -1,0 +1,64 @@
+name: Risk Tier Labeler
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          prompt: |
+            Classify this PR's risk tier and apply the correct label.
+
+            ## Instructions
+
+            1. Review ALL changed files in this PR.
+            2. Classify the PR using the risk tier conditions defined in `risk-tier-conditions.md` at the repo root (if it exists) or fall back to the org-level defaults below.
+            3. A PR is **high risk** if ANY changed file matches a high-risk category. Otherwise it is **low risk**.
+            4. Apply exactly ONE label: `risktier:high` or `risktier:low`.
+            5. Remove any existing `risktier:` label that doesn't match before applying.
+            6. Post a brief PR comment explaining your classification with a short bullet list of which categories matched.
+
+            ## Org-Level Default Risk Tier Conditions
+
+            ### High Risk (requires human review)
+            - Auth flows, permission checks, session management
+            - Encryption, hashing, input sanitization, CORS, security headers
+            - Auth middleware, route protection, API gateway config
+            - CI/CD pipelines, Dockerfiles, IaC, deploy scripts
+            - Env vars, secrets, credentials, vault config
+            - Dependency additions/upgrades (package.json, requirements.txt, go.mod, lockfiles)
+            - File upload endpoints, content sanitization
+            - API router/handler registration, webhook handlers
+            - Database schema migrations, data migrations, ORM config
+            - New top-level features/pages/services (new attack surface)
+            - User/account/role/permission data schemas
+            - Audit logging, compliance, GDPR/privacy logic
+
+            ### Low Risk (auto-approvable)
+            - Documentation, READMEs, changelogs
+            - Tests, test fixtures, test config
+            - Presentational UI components (no auth/mutation logic)
+            - CSS/styling, theme config, design tokens, static assets
+            - Linting/formatting config, editor config
+            - Type definitions with no runtime effect
+            - Images, fonts, translations
+            - Client-side analytics/monitoring config
+            - Read-only data endpoints
+            - Client-side state (no auth logic)
+            - Additive features within existing surfaces
+            - Non-security constants, formatting helpers
+          claude_args: "--max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
