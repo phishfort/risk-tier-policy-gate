@@ -1,64 +1,99 @@
-name: Risk Tier Labeler
+name: Risk Tier Labeler v1
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  label:
+  classify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: anthropics/claude-code-action@v1
+      - name: Collect changed files
+        run: |
+          git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" > changed-files.txt
+          echo "Changed files:" && cat changed-files.txt
+
+      - name: Deterministic risk pre-check
+        id: rules
+        run: node scripts/risk-rules.mjs changed-files.txt config/risk-rules.json
+
+      - name: Force high-risk label from deterministic rules
+        if: steps.rules.outputs.forced_high == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const botLabelPrefix = 'risktier:';
+            const targetLabel = 'risktier:high';
+
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number });
+            for (const l of labels) {
+              if (l.name.startsWith(botLabelPrefix) && l.name !== targetLabel) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name: l.name }).catch(() => {});
+              }
+            }
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: [
+                'Risk tier: **HIGH** (deterministic policy).',
+                '',
+                'This PR touched one or more high-risk file categories (auth/security/infra/dependencies).',
+                'Human review is required.'
+              ].join('\n')
+            });
+
+      - name: LLM classify + label (non-forced cases)
+        if: steps.rules.outputs.forced_high != 'true' && secrets.CLAUDE_ACCESS_TOKEN != ''
+        uses: anthropics/claude-code-action@v1
         with:
           claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
-          prompt: |
-            Classify this PR's risk tier and apply the correct label.
-
-            ## Instructions
-
-            1. Review ALL changed files in this PR.
-            2. Classify the PR using the risk tier conditions defined in `risk-tier-conditions.md` at the repo root (if it exists) or fall back to the org-level defaults below.
-            3. A PR is **high risk** if ANY changed file matches a high-risk category. Otherwise it is **low risk**.
-            4. Apply exactly ONE label: `risktier:high` or `risktier:low`.
-            5. Remove any existing `risktier:` label that doesn't match before applying.
-            6. Post a brief PR comment explaining your classification with a short bullet list of which categories matched.
-
-            ## Org-Level Default Risk Tier Conditions
-
-            ### High Risk (requires human review)
-            - Auth flows, permission checks, session management
-            - Encryption, hashing, input sanitization, CORS, security headers
-            - Auth middleware, route protection, API gateway config
-            - CI/CD pipelines, Dockerfiles, IaC, deploy scripts
-            - Env vars, secrets, credentials, vault config
-            - Dependency additions/upgrades (package.json, requirements.txt, go.mod, lockfiles)
-            - File upload endpoints, content sanitization
-            - API router/handler registration, webhook handlers
-            - Database schema migrations, data migrations, ORM config
-            - New top-level features/pages/services (new attack surface)
-            - User/account/role/permission data schemas
-            - Audit logging, compliance, GDPR/privacy logic
-
-            ### Low Risk (auto-approvable)
-            - Documentation, READMEs, changelogs
-            - Tests, test fixtures, test config
-            - Presentational UI components (no auth/mutation logic)
-            - CSS/styling, theme config, design tokens, static assets
-            - Linting/formatting config, editor config
-            - Type definitions with no runtime effect
-            - Images, fonts, translations
-            - Client-side analytics/monitoring config
-            - Read-only data endpoints
-            - Client-side state (no auth logic)
-            - Additive features within existing surfaces
-            - Non-security constants, formatting helpers
           claude_args: "--max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
+          prompt: |
+            Classify this PR and apply exactly one label: `risktier:high` or `risktier:low`.
+
+            Deterministic pre-check result:
+            - tier: `${{ steps.rules.outputs.deterministic_tier }}`
+            - forced_high: `${{ steps.rules.outputs.forced_high }}`
+            - all_low_safe: `${{ steps.rules.outputs.all_low_safe }}`
+
+            Read `risk-result.json` for changed files and pre-check details.
+            Read `risk-tier-conditions.md` for org-level policy.
+
+            Rules:
+            1) If ANY high-risk category applies, choose `risktier:high`.
+            2) Otherwise choose `risktier:low`.
+            3) Remove incorrect existing `risktier:` labels before applying.
+            4) Post a concise PR comment with:
+               - Selected tier
+               - 2-5 matched categories/reasons
+               - Whether human review is required
+
+      - name: Fallback if LLM unavailable
+        if: steps.rules.outputs.forced_high != 'true' && secrets.CLAUDE_ACCESS_TOKEN == ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const targetLabel = 'risktier:high';
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: 'Risk tier fallback: **HIGH** (LLM token unavailable). Human review required.'
+            });

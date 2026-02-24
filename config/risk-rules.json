@@ -1,0 +1,73 @@
+{
+  "highRiskCategories": [
+    {
+      "name": "authentication_authorization",
+      "patterns": [
+        "**/auth/**",
+        "**/authentication/**",
+        "**/authorization/**",
+        "**/*jwt*",
+        "**/*oauth*",
+        "**/*session*",
+        "**/*permission*",
+        "**/*rbac*"
+      ]
+    },
+    {
+      "name": "security_sensitive",
+      "patterns": [
+        "**/*security*",
+        "**/*crypto*",
+        "**/*secret*",
+        "**/.env*",
+        "**/*cors*",
+        "**/*csrf*"
+      ]
+    },
+    {
+      "name": "infra_ci_cd",
+      "patterns": [
+        ".github/workflows/**",
+        "**/Dockerfile",
+        "**/docker-compose*.yml",
+        "**/terraform/**",
+        "**/*deploy*",
+        "**/*migration*"
+      ]
+    },
+    {
+      "name": "dependencies",
+      "patterns": [
+        "**/package.json",
+        "**/package-lock.json",
+        "**/yarn.lock",
+        "**/pnpm-lock.yaml",
+        "**/requirements.txt",
+        "**/poetry.lock",
+        "**/go.mod",
+        "**/go.sum",
+        "**/Gemfile",
+        "**/Gemfile.lock"
+      ]
+    }
+  ],
+  "lowRiskPatterns": [
+    "**/*.md",
+    "**/*.txt",
+    "**/*.test.*",
+    "**/*.spec.*",
+    "**/tests/**",
+    "**/__tests__/**",
+    "**/*.snap",
+    "**/*.css",
+    "**/*.scss",
+    "**/*.sass",
+    "**/*.less",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.svg",
+    "**/*.gif",
+    "**/*.webp"
+  ]
+}
