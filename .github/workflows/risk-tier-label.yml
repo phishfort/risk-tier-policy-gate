@@ -61,7 +61,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
-          claude_args: "--max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
+          claude_args: "--model sonnet --max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
           prompt: |
             Classify this PR and apply exactly one label: `risktier:high` or `risktier:low`.
 
