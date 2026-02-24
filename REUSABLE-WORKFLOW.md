@@ -18,11 +18,21 @@ on:
 jobs:
   risk-tier:
     uses: phishfort/risk-tier-policy-gate/.github/workflows/risk-tier-reusable.yml@main
+    secrets: inherit
+```
+
+### Optional overrides
+
+If a repo needs custom paths or model, you can still pass inputs/secrets explicitly:
+
+```yaml
+jobs:
+  risk-tier:
+    uses: phishfort/risk-tier-policy-gate/.github/workflows/risk-tier-reusable.yml@main
     with:
       claude_model: sonnet
-      # Optional overrides (caller repo paths)
-      # repo_conditions_path: risk-tier-conditions.md
-      # repo_rules_path: .github/risk-rules.json
+      repo_conditions_path: risk-tier-conditions.md
+      repo_rules_path: .github/risk-rules.json
     secrets:
       CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
 ```
