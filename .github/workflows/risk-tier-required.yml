@@ -4,8 +4,149 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
-  risk-tier:
-    uses: phishfort/risk-tier-policy-gate/.github/workflows/risk-tier-reusable.yml@main
-    secrets:
-      CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+  classify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout central policy repository
+        uses: actions/checkout@v4
+        with:
+          repository: phishfort/risk-tier-policy-gate
+          path: .risk-tier-policy-gate
+
+      - name: Resolve policy file paths
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CENTRAL_RULES=".risk-tier-policy-gate/config/risk-rules.json"
+          CENTRAL_CONDITIONS=".risk-tier-policy-gate/risk-tier-conditions.md"
+
+          RULES_PATH="$CENTRAL_RULES"
+          if [[ -f "risk-rules.json" ]]; then
+            RULES_PATH="risk-rules.json"
+          fi
+
+          CONDITIONS_PATH="$CENTRAL_CONDITIONS"
+          if [[ -f "risk-tier-conditions.md" ]]; then
+            CONDITIONS_PATH="risk-tier-conditions.md"
+          fi
+
+          echo "rules_path=$RULES_PATH" >> "$GITHUB_OUTPUT"
+          echo "conditions_path=$CONDITIONS_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Collect changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt
+          if [[ ! -s changed-files.txt ]]; then
+            echo "No changed files detected" >&2
+            exit 1
+          fi
+          echo "Changed files:" && cat changed-files.txt
+
+      - name: Deterministic risk pre-check
+        id: rules
+        env:
+          RULES_PATH: ${{ steps.resolve.outputs.rules_path }}
+        run: |
+          set -euo pipefail
+          node .risk-tier-policy-gate/scripts/risk-rules.mjs changed-files.txt "$RULES_PATH"
+
+      - name: Force high-risk label from deterministic rules
+        if: steps.rules.outputs.forced_high == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const botLabelPrefix = 'risktier:';
+            const targetLabel = 'risktier:high';
+
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number });
+            for (const l of labels) {
+              if (l.name.startsWith(botLabelPrefix) && l.name !== targetLabel) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name: l.name }).catch(() => {});
+              }
+            }
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: [
+                'Risk tier: **HIGH** (deterministic policy).',
+                '',
+                'This PR touched one or more high-risk file categories (auth/security/infra/dependencies).',
+                'Human review is required.'
+              ].join('\n')
+            });
+
+      - name: LLM classify + label (non-forced cases)
+        if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_ACCESS_TOKEN != ''
+        uses: anthropics/claude-code-action@v1
+        env:
+          CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+        with:
+          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          claude_args: "--model sonnet --max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
+          prompt: |
+            Classify this PR and apply exactly one label: `risktier:high` or `risktier:low`.
+
+            Deterministic pre-check result:
+            - tier: `${{ steps.rules.outputs.deterministic_tier }}`
+            - forced_high: `${{ steps.rules.outputs.forced_high }}`
+            - all_low_safe: `${{ steps.rules.outputs.all_low_safe }}`
+
+            Read `risk-result.json` for changed files and pre-check details.
+            Read `${{ steps.resolve.outputs.conditions_path }}` for risk-tier policy conditions.
+
+            Rules:
+            1) If ANY high-risk category applies, choose `risktier:high`.
+            2) Otherwise choose `risktier:low`.
+            3) Remove incorrect existing `risktier:` labels before applying.
+            4) Post a concise PR comment with:
+               - Selected tier
+               - 2-5 matched categories/reasons
+               - Whether human review is required
+
+      - name: Fallback if LLM unavailable
+        if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_ACCESS_TOKEN == ''
+        uses: actions/github-script@v7
+        env:
+          CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const botLabelPrefix = 'risktier:';
+            const targetLabel = 'risktier:high';
+
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number });
+            for (const l of labels) {
+              if (l.name.startsWith(botLabelPrefix) && l.name !== targetLabel) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name: l.name }).catch(() => {});
+              }
+            }
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
+            await github.rest.issues.createComment({
+              owner, repo, issue_number,
+              body: 'Risk tier fallback: **HIGH** (LLM token unavailable). Human review required.'
+            });
