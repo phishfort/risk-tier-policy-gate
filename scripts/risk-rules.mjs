@@ -16,6 +16,41 @@ const changedFiles = fs
 
 const rules = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
 
+// --- Schema validation ---------------------------------------------------
+function validateRules(rules, filePath) {
+  const errors = [];
+
+  if (!Array.isArray(rules.highRiskCategories) || rules.highRiskCategories.length === 0) {
+    errors.push('highRiskCategories must be a non-empty array');
+  } else {
+    rules.highRiskCategories.forEach((cat, i) => {
+      if (typeof cat.name !== 'string' || cat.name.length === 0) {
+        errors.push(`highRiskCategories[${i}].name must be a non-empty string`);
+      }
+      if (!Array.isArray(cat.patterns) || cat.patterns.length === 0) {
+        errors.push(`highRiskCategories[${i}].patterns must be a non-empty array`);
+      } else if (!cat.patterns.every((p) => typeof p === 'string')) {
+        errors.push(`highRiskCategories[${i}].patterns must only contain strings`);
+      }
+    });
+  }
+
+  if (!Array.isArray(rules.lowRiskPatterns) || rules.lowRiskPatterns.length === 0) {
+    errors.push('lowRiskPatterns must be a non-empty array');
+  } else if (!rules.lowRiskPatterns.every((p) => typeof p === 'string')) {
+    errors.push('lowRiskPatterns must only contain strings');
+  }
+
+  if (errors.length > 0) {
+    console.error(`Invalid risk-rules schema in ${filePath}:`);
+    errors.forEach((e) => console.error(`  - ${e}`));
+    process.exit(1);
+  }
+}
+
+validateRules(rules, rulesPath);
+// -------------------------------------------------------------------------
+
 const categories = [];
 const highHits = [];
 
