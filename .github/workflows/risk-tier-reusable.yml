@@ -104,12 +104,29 @@ jobs:
               ].join('\n')
             });
 
+      - name: Validate claude_model input
+        id: validate_model
+        env:
+          CLAUDE_MODEL_RAW: ${{ inputs.claude_model }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ALLOWED="sonnet haiku opus"
+          for m in $ALLOWED; do
+            if [[ "$CLAUDE_MODEL_RAW" == "$m" ]]; then
+              echo "model=$CLAUDE_MODEL_RAW" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "::error::Invalid claude_model '$CLAUDE_MODEL_RAW'. Allowed: $ALLOWED"
+          exit 1
+
       - name: LLM classify + label (non-forced cases)
         if: steps.rules.outputs.forced_high != 'true' && secrets.CLAUDE_ACCESS_TOKEN != ''
         uses: anthropics/claude-code-action@v1
         with:
           claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
-          claude_args: "--model ${{ inputs.claude_model }} --max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
+          claude_args: "--model ${{ steps.validate_model.outputs.model }} --max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
           prompt: |
             Classify this PR and apply exactly one label: `risktier:high` or `risktier:low`.
 
