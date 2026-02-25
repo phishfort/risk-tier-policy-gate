@@ -18,8 +18,11 @@ on:
 jobs:
   risk-tier:
     uses: phishfort/risk-tier-policy-gate/.github/workflows/risk-tier-reusable.yml@main
-    secrets: inherit
+    secrets:
+      CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
 ```
+
+> **Security note:** Do not use `secrets: inherit` with external reusable workflows. It exposes _all_ org and repo secrets to the called workflow. Always pass only the secrets the workflow actually needs.
 
 ### Optional overrides
 
