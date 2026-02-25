@@ -1,0 +1,11 @@
+name: Risk Tier (Required)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  risk-tier:
+    uses: phishfort/risk-tier-policy-gate/.github/workflows/risk-tier-reusable.yml@main
+    secrets:
+      CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
