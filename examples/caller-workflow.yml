@@ -6,5 +6,6 @@ on:
 
 jobs:
   risk-tier:
+    # Pin to a full commit SHA for supply-chain safety instead of @main
     uses: phishfort/risk-tier-policy-gate/.github/workflows/risk-tier-reusable.yml@main
     secrets: inherit
