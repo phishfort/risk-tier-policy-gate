@@ -46,6 +46,9 @@ jobs:
       - name: Resolve policy file paths
         id: resolve
         shell: bash
+        env:
+          REPO_RULES_PATH: ${{ inputs.repo_rules_path }}
+          REPO_CONDITIONS_PATH: ${{ inputs.repo_conditions_path }}
         run: |
           set -euo pipefail
 
@@ -53,27 +56,38 @@ jobs:
           CENTRAL_CONDITIONS=".risk-tier-policy-gate/risk-tier-conditions.md"
 
           RULES_PATH="$CENTRAL_RULES"
-          if [[ -n "${{ inputs.repo_rules_path }}" && -f "${{ inputs.repo_rules_path }}" ]]; then
-            RULES_PATH="${{ inputs.repo_rules_path }}"
+          if [[ -n "$REPO_RULES_PATH" && -f "$REPO_RULES_PATH" ]]; then
+            RULES_PATH="$REPO_RULES_PATH"
           fi
 
           CONDITIONS_PATH="$CENTRAL_CONDITIONS"
-          if [[ -n "${{ inputs.repo_conditions_path }}" && -f "${{ inputs.repo_conditions_path }}" ]]; then
-            CONDITIONS_PATH="${{ inputs.repo_conditions_path }}"
+          if [[ -n "$REPO_CONDITIONS_PATH" && -f "$REPO_CONDITIONS_PATH" ]]; then
+            CONDITIONS_PATH="$REPO_CONDITIONS_PATH"
           fi
 
           echo "rules_path=$RULES_PATH" >> "$GITHUB_OUTPUT"
           echo "conditions_path=$CONDITIONS_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Collect changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" > changed-files.txt
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt
+          if [[ ! -s changed-files.txt ]]; then
+            echo "No changed files detected" >&2
+            exit 1
+          fi
           echo "Changed files:" && cat changed-files.txt
 
       - name: Deterministic risk pre-check
         id: rules
+        env:
+          RULES_PATH: ${{ steps.resolve.outputs.rules_path }}
         run: |
-          node .risk-tier-policy-gate/scripts/risk-rules.mjs changed-files.txt "${{ steps.resolve.outputs.rules_path }}"
+          set -euo pipefail
+          node .risk-tier-policy-gate/scripts/risk-rules.mjs changed-files.txt "$RULES_PATH"
 
       - name: Force high-risk label from deterministic rules
         if: steps.rules.outputs.forced_high == 'true'
