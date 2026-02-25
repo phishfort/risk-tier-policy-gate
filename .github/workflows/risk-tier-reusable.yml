@@ -65,6 +65,23 @@ jobs:
             CONDITIONS_PATH="$REPO_CONDITIONS_PATH"
           fi
 
+          # Validate paths contain only safe characters before writing to GITHUB_OUTPUT
+          for var_name in RULES_PATH CONDITIONS_PATH; do
+            val="${!var_name}"
+            if [[ "$val" =~ \.\. ]]; then
+              echo "::error::$var_name contains path traversal (..): $val"
+              exit 1
+            fi
+            if [[ "$val" == *$'\n'* ]]; then
+              echo "::error::$var_name contains newlines"
+              exit 1
+            fi
+            if ! [[ "$val" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+              echo "::error::$var_name contains unsafe characters: $val"
+              exit 1
+            fi
+          done
+
           echo "rules_path=$RULES_PATH" >> "$GITHUB_OUTPUT"
           echo "conditions_path=$CONDITIONS_PATH" >> "$GITHUB_OUTPUT"
 
