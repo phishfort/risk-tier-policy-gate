@@ -49,3 +49,5 @@ risk-tier-conditions.md                   ← full policy Claude reads for class
 - **Deterministic rules** (file patterns): edit [`config/risk-rules.json`](config/risk-rules.json)
 - **LLM classification policy**: edit [`risk-tier-conditions.md`](risk-tier-conditions.md)
 - Changes take effect on the next PR (workflow always pulls from `main`)
+
+**Per-repo overrides:** Consumer repos can add their own `risk-tier-conditions.md` or `risk-rules.json` at the repo root. If present, they take precedence over the central defaults.
