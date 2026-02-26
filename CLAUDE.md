@@ -1,5 +1,7 @@
 # Risk Tier Policy Gate
 
+**WARNING: This is a PUBLIC repository. Never commit internal repo names, secrets, internal URLs, or any confidential org information.**
+
 Central policy repo that auto-classifies PRs as `risktier:high` or `risktier:low` across the phishfort org.
 
 ## Architecture
@@ -37,13 +39,24 @@ To add a repo: edit the ruleset and add the repo to the target list.
 - `claude-code-action@v1` input is `claude_code_oauth_token` (not `claude_access_token`).
 - `max-turns: 15` — 5 was insufficient for Claude to read files + classify + label + comment.
 
+## Branding
+
+All PR comments use the `🏰 **PhishFort Risk Tier Profiler**` prefix and include links to the policy conditions and rule definitions in this repo. The Claude prompt also instructs the LLM to use this format.
+
+## Rolling Out to a New Repo
+
+1. Get the repo ID: `gh api repos/phishfort/REPO_NAME --jq '.id'`
+2. Edit the org ruleset (see Org Ruleset Setup above)
+3. Add the repo ID to the target list
+4. That's it — no workflow file needed in the target repo
+
 ## Testing
 
 To test on a repo:
-1. Add repo ID to the org ruleset target list
+1. Add repo to the org ruleset (see above)
 2. Open a PR on that repo
-3. The `Risk Tier (Required)` / `classify` check should appear automatically
-4. Verify label (`risktier:high` or `risktier:low`) and PR comment
+3. The `🏰 PhishFort Risk Tier Profiler (Required)` / `classify` check should appear automatically
+4. Verify label (`risktier:high` or `risktier:low`) and PR comment with PhishFort branding
 
 ## Modifying Policy
 
