@@ -1,4 +1,4 @@
-name: Risk Tier (Required)
+name: "🏰 PhishFort Risk Tier Profiler (Required)"
 
 on:
   pull_request:
@@ -91,10 +91,13 @@ jobs:
             await github.rest.issues.createComment({
               owner, repo, issue_number,
               body: [
-                'Risk tier: **HIGH** (deterministic policy).',
+                '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH**',
                 '',
-                'This PR touched one or more high-risk file categories (auth/security/infra/dependencies).',
-                'Human review is required.'
+                'This PR touched one or more high-risk file categories and has been automatically flagged by deterministic policy rules. Human review is required before merging.',
+                '',
+                '**Resources:**',
+                '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+                '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
               ].join('\n')
             });
 
@@ -121,10 +124,12 @@ jobs:
             1) If ANY high-risk category applies, choose `risktier:high`.
             2) Otherwise choose `risktier:low`.
             3) Remove incorrect existing `risktier:` labels before applying.
-            4) Post a concise PR comment with:
-               - Selected tier
+            4) Post a concise PR comment starting with "🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH/LOW**" and including:
                - 2-5 matched categories/reasons
                - Whether human review is required
+               - A resources section with these links:
+                 - [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)
+                 - [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)
 
       - name: Fallback if LLM unavailable
         if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN == ''
@@ -149,5 +154,13 @@ jobs:
             await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
             await github.rest.issues.createComment({
               owner, repo, issue_number,
-              body: 'Risk tier fallback: **HIGH** (LLM token unavailable). Human review required.'
+              body: [
+                '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH** (fallback)',
+                '',
+                'LLM classification was unavailable. Defaulting to high risk as a precaution. Human review is required before merging.',
+                '',
+                '**Resources:**',
+                '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+                '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
+              ].join('\n')
             });
