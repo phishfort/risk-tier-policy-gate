@@ -80,7 +80,29 @@ for (const file of changedFiles) {
 }
 
 const uniqueCategories = [...new Set(categories)];
-const forcedHigh = uniqueCategories.length > 0;
+
+// Lockfile-only exception: if the only high-risk hits are lockfiles with no
+// corresponding manifest change, downgrade to non-forced (let LLM decide or
+// treat as low-safe).
+const lockfileMap = {
+  'package-lock.json': 'package.json',
+  'yarn.lock': 'package.json',
+  'pnpm-lock.yaml': 'package.json',
+  'poetry.lock': 'pyproject.toml',
+  'Gemfile.lock': 'Gemfile',
+  'go.sum': 'go.mod',
+};
+const changedSet = new Set(changedFiles);
+const lockfileOnly =
+  highHits.length > 0 &&
+  highHits.every((h) => {
+    const basename = path.basename(h.file);
+    if (!(basename in lockfileMap)) return false;
+    const manifest = h.file.replace(basename, lockfileMap[basename]);
+    return !changedSet.has(manifest);
+  });
+
+const forcedHigh = uniqueCategories.length > 0 && !lockfileOnly;
 const allLowSafe = !forcedHigh && changedFiles.length > 0 && changedFiles.every((f) => lowMatchers.some((r) => r.test(f)));
 
 const result = {
@@ -88,10 +110,13 @@ const result = {
   deterministic_tier: forcedHigh ? 'high' : allLowSafe ? 'low' : 'unknown',
   forced_high: forcedHigh,
   all_low_safe: allLowSafe,
+  lockfile_only: lockfileOnly,
   matched_categories: uniqueCategories,
   high_hits: highHits,
   summary: forcedHigh
     ? `High risk forced by deterministic rules (${uniqueCategories.join(', ')})`
+    : lockfileOnly
+    ? 'Lockfile-only change (no manifest modified); downgraded from high-risk'
     : allLowSafe
     ? 'Low risk by deterministic safe-file patterns'
     : 'No deterministic high-risk hit; LLM classification required',
