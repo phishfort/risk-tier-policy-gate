@@ -13,7 +13,9 @@ scripts/risk-rules.mjs  ← evaluates changed files against risk-rules.json
 risk-tier-conditions.md ← policy doc Claude reads for non-deterministic classification
 ```
 
-**Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high.
+**Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high → finally, auto-approve low-risk PRs or dismiss bot approvals for high-risk PRs.
+
+**Merge blocking:** A separate org ruleset (`org-level-risk-tier-reviews`) requires 1 PR review on targeted repos. The workflow auto-approves `risktier:low` PRs via bot review. `risktier:high` PRs require a real human review. Stale reviews (bot + human) are dismissed on new pushes via the ruleset's "dismiss stale reviews" setting, triggering re-classification.
 
 ## Org Ruleset Setup
 
