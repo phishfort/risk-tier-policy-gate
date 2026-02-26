@@ -10,7 +10,7 @@ When you open a PR on an enrolled repo:
 2. If no deterministic match, **Claude (LLM)** reads the diff and classifies using the policy in [`risk-tier-conditions.md`](risk-tier-conditions.md)
 3. The PR gets labeled `risktier:high` or `risktier:low`
 4. **Low-risk** PRs are auto-approved by the bot — merge away
-5. **High-risk** PRs are blocked until a human approves
+5. **High-risk** PRs auto-request reviews from collaborators with write access and are blocked until a human approves
 
 ```
 PR opened → deterministic rules → (if unclear) LLM classifies → label → auto-approve or block
@@ -27,7 +27,7 @@ Anything touching security-sensitive areas: auth, secrets, CI/CD, dependencies, 
 **You don't need to do anything.** If your repo is enrolled, the check runs automatically on every PR. No workflow files needed in your repo.
 
 - `risktier:low` → bot approves, you can merge
-- `risktier:high` → get a teammate to review, then merge
+- `risktier:high` → reviews auto-requested from repo collaborators with write access, then merge after approval
 
 ## Repo structure
 

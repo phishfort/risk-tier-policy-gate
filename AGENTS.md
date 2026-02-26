@@ -13,9 +13,11 @@ scripts/risk-rules.mjs  ← evaluates changed files against risk-rules.json
 risk-tier-conditions.md ← policy doc Claude reads for non-deterministic classification
 ```
 
-**Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high → finally, auto-approve low-risk PRs or dismiss bot approvals for high-risk PRs.
+**Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high → finally, auto-approve low-risk PRs or dismiss bot approvals and request reviews from write-access collaborators for high-risk PRs.
 
-**Merge blocking:** The `org-level-risk-tier` ruleset also requires 1 PR review (dismiss stale reviews on push). The workflow auto-approves `risktier:low` PRs via bot review. `risktier:high` PRs require human review. New pushes dismiss stale reviews, triggering re-classification.
+**Merge blocking:** The `org-level-risk-tier` ruleset also requires 1 PR review (dismiss stale reviews on push). The workflow auto-approves `risktier:low` PRs via bot review. `risktier:high` PRs auto-request reviews from collaborators with write access and require human review. New pushes dismiss stale reviews, triggering re-classification.
+
+**Review requests:** On high-risk PRs, the workflow calls `repos.listCollaborators` with `permission: push` to find eligible reviewers (excluding the PR author). Team-based review requests (`team_reviewers`) don't work because the `GITHUB_TOKEN` can't resolve org team slugs (403/422).
 
 ## Org Ruleset Setup
 
