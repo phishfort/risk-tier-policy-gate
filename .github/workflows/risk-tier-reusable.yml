@@ -25,6 +25,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  id-token: write
 
 jobs:
   classify:
@@ -156,7 +157,7 @@ jobs:
         if: steps.rules.outputs.forced_high != 'true' && secrets.CLAUDE_CODE_OAUTH_TOKEN != ''
         uses: anthropics/claude-code-action@v1
         with:
-          claude_access_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: "--model ${{ steps.validate_model.outputs.model }} --max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
           prompt: |
             Classify this PR and apply exactly one label: `risktier:high` or `risktier:low`.
