@@ -134,6 +134,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.payload.pull_request.number;
@@ -149,12 +150,26 @@ jobs:
 
             await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
 
+            const result = JSON.parse(fs.readFileSync('risk-result.json', 'utf8'));
+            const byCategory = {};
+            for (const hit of result.high_hits) {
+              (byCategory[hit.category] ??= []).push(hit.file);
+            }
+            const triggerLines = Object.entries(byCategory).map(([cat, files]) => {
+              const label = cat.replace(/_/g, ' ');
+              const fileList = files.map(f => `\`${f}\``).join(', ');
+              return `- **${label}**: ${fileList}`;
+            });
+
             const marker = '<!-- risktier-bot-comment -->';
             const body = [
               marker,
               '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH**',
               '',
-              'This PR touched one or more high-risk file categories and has been automatically flagged by deterministic policy rules. Human review is required before merging.',
+              'Flagged by deterministic policy rules. Human review is required before merging.',
+              '',
+              '**Triggered rules:**',
+              ...triggerLines,
               '',
               '**Resources:**',
               '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
