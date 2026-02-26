@@ -204,27 +204,26 @@ jobs:
                 }
               }
 
-              // Request review from teams with write access, fallback to engineering-reviewers
+              // Request review from collaborators with write access (excluding PR author)
               const prAuthor = context.payload.pull_request.user.login;
-              let reviewTeams = ['engineering-reviewers'];
               try {
-                const { data: teams } = await github.rest.repos.listTeams({ owner, repo });
-                const writeTeams = teams
-                  .filter(t => ['push', 'admin', 'maintain'].includes(t.permission))
-                  .map(t => t.slug);
-                if (writeTeams.length > 0) reviewTeams = writeTeams;
-              } catch (err) {
-                core.warning(`Could not list repo teams (${err.status}), falling back to engineering-reviewers`);
-              }
-
-              try {
-                await github.rest.pulls.requestReviewers({
-                  owner, repo, pull_number: pr_number,
-                  team_reviewers: reviewTeams
+                const { data: collaborators } = await github.rest.repos.listCollaborators({
+                  owner, repo, permission: 'push'
                 });
-                core.info(`Requested review from team(s): ${reviewTeams.join(', ')}`);
+                const reviewers = collaborators
+                  .filter(u => u.login !== prAuthor && u.type === 'User')
+                  .map(u => u.login);
+                if (reviewers.length > 0) {
+                  await github.rest.pulls.requestReviewers({
+                    owner, repo, pull_number: pr_number,
+                    reviewers
+                  });
+                  core.info(`Requested review from: ${reviewers.join(', ')}`);
+                } else {
+                  core.warning('No eligible reviewers found');
+                }
               } catch (err) {
-                core.warning(`Failed to request team reviewers (${err.status}): ${err.message}`);
+                core.warning(`Failed to request reviewers (${err.status}): ${err.message}`);
               }
 
               core.info('High-risk PR — human review required');
