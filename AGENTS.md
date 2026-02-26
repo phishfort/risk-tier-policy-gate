@@ -13,7 +13,9 @@ scripts/risk-rules.mjs  ← evaluates changed files against risk-rules.json
 risk-tier-conditions.md ← policy doc Claude reads for non-deterministic classification
 ```
 
-**Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high.
+**Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high → finally, auto-approve low-risk PRs or dismiss bot approvals for high-risk PRs.
+
+**Merge blocking:** The `org-level-risk-tier` ruleset also requires 1 PR review (dismiss stale reviews on push). The workflow auto-approves `risktier:low` PRs via bot review. `risktier:high` PRs require human review. New pushes dismiss stale reviews, triggering re-classification.
 
 ## Org Ruleset Setup
 
@@ -23,6 +25,7 @@ Configured at: `github.com/organizations/phishfort/settings/rules/13230835`
 - Enforcement: active
 - Targets: specific repos by ID, default branch
 - Required workflow: `.github/workflows/risk-tier-required.yml` from this repo at `refs/heads/main`
+- Required pull request reviews: 1 approval, dismiss stale reviews on new commits
 - Bypass: org admins
 
 To add a repo: edit the ruleset and add the repo to the target list.
