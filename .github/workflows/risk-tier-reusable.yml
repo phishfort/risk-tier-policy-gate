@@ -19,7 +19,7 @@ on:
         type: string
         default: "sonnet"
     secrets:
-      CLAUDE_ACCESS_TOKEN:
+      CLAUDE_CODE_OAUTH_TOKEN:
         required: false
 
 permissions:
@@ -153,10 +153,10 @@ jobs:
           exit 1
 
       - name: LLM classify + label (non-forced cases)
-        if: steps.rules.outputs.forced_high != 'true' && secrets.CLAUDE_ACCESS_TOKEN != ''
+        if: steps.rules.outputs.forced_high != 'true' && secrets.CLAUDE_CODE_OAUTH_TOKEN != ''
         uses: anthropics/claude-code-action@v1
         with:
-          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          claude_access_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: "--model ${{ steps.validate_model.outputs.model }} --max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
           prompt: |
             Classify this PR and apply exactly one label: `risktier:high` or `risktier:low`.
@@ -179,7 +179,7 @@ jobs:
                - Whether human review is required
 
       - name: Fallback if LLM unavailable
-        if: steps.rules.outputs.forced_high != 'true' && secrets.CLAUDE_ACCESS_TOKEN == ''
+        if: steps.rules.outputs.forced_high != 'true' && secrets.CLAUDE_CODE_OAUTH_TOKEN == ''
         uses: actions/github-script@v7
         with:
           script: |

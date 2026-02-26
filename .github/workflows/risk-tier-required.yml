@@ -98,12 +98,12 @@ jobs:
             });
 
       - name: LLM classify + label (non-forced cases)
-        if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_ACCESS_TOKEN != ''
+        if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
         uses: anthropics/claude-code-action@v1
         env:
-          CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         with:
-          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          claude_access_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: "--model sonnet --max-turns 5 --allowedTools Bash,View,GlobTool,GrepTool,GitHub"
           prompt: |
             Classify this PR and apply exactly one label: `risktier:high` or `risktier:low`.
@@ -126,10 +126,10 @@ jobs:
                - Whether human review is required
 
       - name: Fallback if LLM unavailable
-        if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_ACCESS_TOKEN == ''
+        if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN == ''
         uses: actions/github-script@v7
         env:
-          CLAUDE_ACCESS_TOKEN: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         with:
           script: |
             const owner = context.repo.owner;
