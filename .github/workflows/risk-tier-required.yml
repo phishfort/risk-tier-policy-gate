@@ -61,6 +61,24 @@ jobs:
           fi
           echo "Changed files:" && cat changed-files.txt
 
+      - name: PR size check
+        id: size
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          FILE_COUNT=$(wc -l < changed-files.txt | tr -d ' ')
+          LINE_COUNT=$(git diff --shortstat "$BASE_SHA" "$HEAD_SHA" | grep -oP '\d+ insertion' | grep -oP '\d+' || echo 0)
+          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "line_count=$LINE_COUNT" >> "$GITHUB_OUTPUT"
+          LARGE_PR=false
+          if [[ "$FILE_COUNT" -ge 50 ]] || [[ "$LINE_COUNT" -ge 1000 ]]; then
+            LARGE_PR=true
+          fi
+          echo "large_pr=$LARGE_PR" >> "$GITHUB_OUTPUT"
+          echo "Files: $FILE_COUNT, Lines added: $LINE_COUNT, Large PR: $LARGE_PR"
+
       - name: Deterministic risk pre-check
         id: rules
         env:
@@ -69,8 +87,50 @@ jobs:
           set -euo pipefail
           node .risk-tier-policy-gate/scripts/risk-rules.mjs changed-files.txt "$RULES_PATH"
 
+      - name: Force high-risk label for large PRs
+        if: steps.size.outputs.large_pr == 'true' && steps.rules.outputs.forced_high != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const botLabelPrefix = 'risktier:';
+            const targetLabel = 'risktier:high';
+            const fileCount = '${{ steps.size.outputs.file_count }}';
+            const lineCount = '${{ steps.size.outputs.line_count }}';
+
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number });
+            for (const l of labels) {
+              if (l.name.startsWith(botLabelPrefix) && l.name !== targetLabel) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name: l.name }).catch(() => {});
+              }
+            }
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
+
+            const marker = '<!-- risktier-bot-comment -->';
+            const body = [
+              marker,
+              '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH**',
+              '',
+              `This PR is large (${fileCount} files, ${lineCount}+ lines added) and has been automatically flagged for human review.`,
+              '',
+              '**Resources:**',
+              '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+              '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
       - name: Force high-risk label from deterministic rules
-        if: steps.rules.outputs.forced_high == 'true'
+        if: steps.rules.outputs.forced_high == 'true' && steps.size.outputs.large_pr != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -88,21 +148,29 @@ jobs:
             }
 
             await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
-            await github.rest.issues.createComment({
-              owner, repo, issue_number,
-              body: [
-                '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH**',
-                '',
-                'This PR touched one or more high-risk file categories and has been automatically flagged by deterministic policy rules. Human review is required before merging.',
-                '',
-                '**Resources:**',
-                '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
-                '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
-              ].join('\n')
-            });
+
+            const marker = '<!-- risktier-bot-comment -->';
+            const body = [
+              marker,
+              '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH**',
+              '',
+              'This PR touched one or more high-risk file categories and has been automatically flagged by deterministic policy rules. Human review is required before merging.',
+              '',
+              '**Resources:**',
+              '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+              '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
 
       - name: LLM classify + label (non-forced cases)
-        if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        if: steps.rules.outputs.forced_high != 'true' && steps.size.outputs.large_pr != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
         uses: anthropics/claude-code-action@v1
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -124,7 +192,8 @@ jobs:
             1) If ANY high-risk category applies, choose `risktier:high`.
             2) Otherwise choose `risktier:low`.
             3) Remove incorrect existing `risktier:` labels before applying.
-            4) Post a concise PR comment starting with "🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH/LOW**" and including:
+            4) Before posting a comment, search for an existing comment containing `<!-- risktier-bot-comment -->` by `github-actions[bot]`. If found, update it. Otherwise create a new comment.
+            5) The comment must start with `<!-- risktier-bot-comment -->` (hidden marker), then "🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH/LOW**" and include:
                - 2-5 matched categories/reasons
                - Whether human review is required
                - A resources section with these links:
@@ -132,7 +201,7 @@ jobs:
                  - [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)
 
       - name: Fallback if LLM unavailable
-        if: steps.rules.outputs.forced_high != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN == ''
+        if: steps.rules.outputs.forced_high != 'true' && steps.size.outputs.large_pr != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN == ''
         uses: actions/github-script@v7
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -152,18 +221,26 @@ jobs:
             }
 
             await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
-            await github.rest.issues.createComment({
-              owner, repo, issue_number,
-              body: [
-                '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH** (fallback)',
-                '',
-                'LLM classification was unavailable. Defaulting to high risk as a precaution. Human review is required before merging.',
-                '',
-                '**Resources:**',
-                '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
-                '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
-              ].join('\n')
-            });
+
+            const marker = '<!-- risktier-bot-comment -->';
+            const body = [
+              marker,
+              '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH** (fallback)',
+              '',
+              'LLM classification was unavailable. Defaulting to high risk as a precaution. Human review is required before merging.',
+              '',
+              '**Resources:**',
+              '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+              '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
 
       - name: Auto-approve low-risk / dismiss bot approval for high-risk
         if: always()
