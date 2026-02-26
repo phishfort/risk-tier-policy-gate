@@ -203,5 +203,29 @@ jobs:
                   });
                 }
               }
+
+              // Request review from teams with write access, fallback to engineering-reviewers
+              const prAuthor = context.payload.pull_request.user.login;
+              let reviewTeams = ['engineering-reviewers'];
+              try {
+                const { data: teams } = await github.rest.repos.listTeams({ owner, repo });
+                const writeTeams = teams
+                  .filter(t => ['push', 'admin', 'maintain'].includes(t.permission))
+                  .map(t => t.slug);
+                if (writeTeams.length > 0) reviewTeams = writeTeams;
+              } catch (err) {
+                core.warning(`Could not list repo teams (${err.status}), falling back to engineering-reviewers`);
+              }
+
+              try {
+                await github.rest.pulls.requestReviewers({
+                  owner, repo, pull_number: pr_number,
+                  team_reviewers: reviewTeams
+                });
+                core.info(`Requested review from team(s): ${reviewTeams.join(', ')}`);
+              } catch (err) {
+                core.warning(`Failed to request team reviewers (${err.status}): ${err.message}`);
+              }
+
               core.info('High-risk PR — human review required');
             }
