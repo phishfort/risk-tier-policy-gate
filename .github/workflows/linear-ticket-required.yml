@@ -1,0 +1,75 @@
+name: "🎫 Linear Ticket Required"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  linear-ticket:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate Linear ticket reference
+        uses: actions/github-script@v7
+        env:
+          LINEAR_KEY_REGEX: '\\b[A-Z][A-Z0-9]+-\\d+\\b'
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const title = context.payload.pull_request.title || '';
+            const body = context.payload.pull_request.body || '';
+            const branch = context.payload.pull_request.head?.ref || '';
+
+            const marker = '<!-- linear-ticket-bot-comment -->';
+            const regexSource = process.env.LINEAR_KEY_REGEX || '\\b[A-Z][A-Z0-9]+-\\d+\\b';
+            const regex = new RegExp(regexSource, 'g');
+
+            const textToScan = `${title}\n${body}\n${branch}`;
+            const matches = [...new Set((textToScan.match(regex) || []).map((m) => m.trim()))];
+            const hasTicket = matches.length > 0;
+
+            const upsertComment = async (commentBody) => {
+              const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+              const existing = comments.find((c) => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: commentBody });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number, body: commentBody });
+              }
+            };
+
+            if (hasTicket) {
+              const body = [
+                marker,
+                '🎫 **Linear Ticket Check** — **PASS**',
+                '',
+                `Detected ticket reference(s): ${matches.map((m) => `\`${m}\``).join(', ')}`,
+                '',
+                'This requirement is satisfied.'
+              ].join('\n');
+
+              await upsertComment(body);
+              core.info(`Linear ticket found: ${matches.join(', ')}`);
+              return;
+            }
+
+            const failBody = [
+              marker,
+              '🎫 **Linear Ticket Check** — **FAIL**',
+              '',
+              'No Linear ticket key detected in PR title, body, or branch name.',
+              '',
+              '**How to fix:**',
+              '- Add a ticket key like `ENG-123` to the PR title, body, or branch name.',
+              '- Example title: `ENG-123: add caching for risk classifier`'
+            ].join('\n');
+
+            await upsertComment(failBody);
+            core.setFailed('Missing Linear ticket key (expected pattern like ABC-123).');
