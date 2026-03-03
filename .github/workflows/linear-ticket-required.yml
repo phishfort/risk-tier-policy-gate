@@ -17,7 +17,7 @@ jobs:
       - name: Validate Linear ticket reference
         uses: actions/github-script@v7
         env:
-          LINEAR_KEY_REGEX: '\\b[A-Z][A-Z0-9]+-\\d+\\b'
+          LINEAR_KEY_REGEX: '\\b(?:CPT|CI|TKD|DS|DET|OPS|TR|CS|TH)-\\d+\\b'
           BYPASS_LABEL: 'no-linear-required'
         with:
           script: |
@@ -29,7 +29,7 @@ jobs:
             const branch = context.payload.pull_request.head?.ref || '';
 
             const marker = '<!-- linear-ticket-bot-comment -->';
-            const regexSource = process.env.LINEAR_KEY_REGEX || '\\b[A-Z][A-Z0-9]+-\\d+\\b';
+            const regexSource = process.env.LINEAR_KEY_REGEX || '\\b(?:CPT|CI|TKD|DS|DET|OPS|TR|CS|TH)-\\d+\\b';
             const bypassLabel = (process.env.BYPASS_LABEL || 'no-linear-required').trim().toLowerCase();
             const regex = new RegExp(regexSource, 'g');
             const labels = (context.payload.pull_request.labels || []).map((l) => (l.name || '').toLowerCase());
@@ -86,8 +86,9 @@ jobs:
               'No Linear ticket key detected in PR title, body, or branch name.',
               '',
               '**How to fix:**',
-              '- Add a ticket key like `ENG-123` to the PR title, body, or branch name.',
-              '- Example title: `ENG-123: add caching for risk classifier`'
+              '- Add a ticket key like `CPT-123` to the PR title, body, or branch name.',
+              '- Accepted prefixes: `CPT`, `CI`, `TKD`, `DS`, `DET`, `OPS`, `TR`, `CS`, `TH`.',
+              '- Example title: `CPT-123: add caching for risk classifier`'
             ].join('\n');
 
             await upsertComment(failBody);
