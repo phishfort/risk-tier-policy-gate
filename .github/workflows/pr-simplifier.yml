@@ -7,7 +7,6 @@ on:
       - '**/*.md'
       - '**/*.txt'
       - 'docs/**'
-      - '.github/**'
       - '**/*.png'
       - '**/*.jpg'
       - '**/*.jpeg'
@@ -43,7 +42,9 @@ jobs:
           echo "Changed files:" && cat changed-files.txt
 
       - name: Run Claude simplifier pass
+        id: simplify
         if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -75,7 +76,33 @@ jobs:
             - Title: "✨ PR Simplifier Suggestions"
             - Brief summary
             - Bullet list of recommendations
-            - Final section: "No-blocking note" clarifying these are recommendations, not merge blockers.
+            - Final section: "Non-blocking note" clarifying these are recommendations, not merge blockers.
+
+      - name: Post note when simplifier run fails
+        if: env.CLAUDE_CODE_OAUTH_TOKEN != '' && steps.simplify.outcome != 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const marker = '<!-- pr-simplifier-bot-comment -->';
+            const body = [
+              marker,
+              '✨ **PR Simplifier Suggestions**',
+              '',
+              'Simplifier run failed in this workflow execution (transient/tooling issue).',
+              '',
+              'This check is advisory and non-blocking. Re-run the workflow to try again.'
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
 
       - name: Skip note when Claude token is missing
         if: env.CLAUDE_CODE_OAUTH_TOKEN == ''
