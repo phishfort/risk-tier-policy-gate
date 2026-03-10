@@ -1,0 +1,144 @@
+name: "🤖 Codex PR Review"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - '**/*.txt'
+      - 'docs/**'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.jpeg'
+      - '**/*.gif'
+      - '**/*.svg'
+      - '**/*.webp'
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  codex-review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      codex_message: ${{ steps.run_codex.outputs.final-message }}
+      codex_ran: ${{ steps.gate.outputs.codex_ran }}
+
+    steps:
+      - name: Gate on OpenAI API key
+        id: gate
+        run: |
+          if [ -n "${{ secrets.OPENAI_API_KEY }}" ]; then
+            echo "codex_ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "codex_ran=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout PR merge ref
+        if: steps.gate.outputs.codex_ran == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+
+      - name: Pre-fetch PR base and head refs
+        if: steps.gate.outputs.codex_ran == 'true'
+        run: |
+          git fetch --no-tags origin \
+            ${{ github.event.pull_request.base.ref }} \
+            +refs/pull/${{ github.event.pull_request.number }}/head
+
+      - name: Run Codex review
+        id: run_codex
+        if: steps.gate.outputs.codex_ran == 'true'
+        continue-on-error: true
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          safety-strategy: drop-sudo
+          model: gpt-5-codex
+          effort: medium
+          sandbox: read-only
+          prompt: |
+            Review ONLY the changes introduced by this PR and provide concise, high-signal code review feedback.
+
+            Repository: ${{ github.repository }}
+            PR: #${{ github.event.pull_request.number }}
+
+            Scope for review:
+            - git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
+            - git log --oneline ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
+
+            Prioritize:
+            1) correctness bugs
+            2) security risks
+            3) reliability/maintainability concerns
+            4) simplification opportunities
+
+            Keep feedback practical and non-blocking unless severe.
+            If no issues are found, say that clearly.
+
+            Output format:
+            - Start with: "### 🤖 Codex Review"
+            - Then sections: "Critical", "Important", "Nit/Suggestions", "Summary"
+            - Use file paths and short actionable bullets.
+
+      - name: Upsert Codex review comment
+        uses: actions/github-script@v7
+        env:
+          CODEX_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+          CODEX_RAN: ${{ steps.gate.outputs.codex_ran }}
+          CODEX_OUTCOME: ${{ steps.run_codex.outcome }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const marker = '<!-- codex-pr-review-bot-comment -->';
+
+            const codexRan = process.env.CODEX_RAN === 'true';
+            const codexOutcome = process.env.CODEX_OUTCOME || 'skipped';
+            const codexMessage = (process.env.CODEX_MESSAGE || '').trim();
+
+            let body;
+            if (!codexRan) {
+              body = [
+                marker,
+                '### 🤖 Codex Review',
+                '',
+                'Skipped: `OPENAI_API_KEY` is not configured for this repository.',
+                '',
+                '_This review is advisory and non-blocking._'
+              ].join('\n');
+            } else if (!codexMessage || codexOutcome !== 'success') {
+              body = [
+                marker,
+                '### 🤖 Codex Review',
+                '',
+                'Codex review run did not complete successfully in this execution.',
+                'Please re-run this workflow to retry.',
+                '',
+                '_This review is advisory and non-blocking._'
+              ].join('\n');
+            } else {
+              body = [
+                marker,
+                codexMessage,
+                '',
+                '_This review is advisory and non-blocking._'
+              ].join('\n');
+            }
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
