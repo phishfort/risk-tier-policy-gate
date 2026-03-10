@@ -87,12 +87,44 @@ jobs:
             - Then sections: "Critical", "Important", "Nit/Suggestions", "Summary"
             - Use file paths and short actionable bullets.
 
+      - name: Estimate review token/cost footprint
+        id: estimate
+        if: steps.gate.outputs.codex_ran == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          INPUT_COST_PER_1M: '1.50'
+          OUTPUT_COST_PER_1M: '6.00'
+        run: |
+          set -euo pipefail
+
+          FILES_CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | wc -l | tr -d ' ')
+          LINE_DELTA=$(git diff --shortstat "$BASE_SHA" "$HEAD_SHA" | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
+
+          # Rough heuristic for review-style runs (prompt + diff/context + reasoning overhead).
+          EST_INPUT_TOKENS=$(( 6000 + FILES_CHANGED * 800 + LINE_DELTA * 6 ))
+          if [ "$EST_INPUT_TOKENS" -gt 250000 ]; then EST_INPUT_TOKENS=250000; fi
+          EST_OUTPUT_TOKENS=1200
+
+          EST_COST=$(awk -v it="$EST_INPUT_TOKENS" -v ot="$EST_OUTPUT_TOKENS" -v ip="$INPUT_COST_PER_1M" -v op="$OUTPUT_COST_PER_1M" 'BEGIN { printf "%.4f", (it/1000000)*ip + (ot/1000000)*op }')
+
+          echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
+          echo "line_delta=$LINE_DELTA" >> "$GITHUB_OUTPUT"
+          echo "est_input_tokens=$EST_INPUT_TOKENS" >> "$GITHUB_OUTPUT"
+          echo "est_output_tokens=$EST_OUTPUT_TOKENS" >> "$GITHUB_OUTPUT"
+          echo "est_cost_usd=$EST_COST" >> "$GITHUB_OUTPUT"
+
       - name: Upsert Codex review comment
         uses: actions/github-script@v7
         env:
           CODEX_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
           CODEX_RAN: ${{ steps.gate.outputs.codex_ran }}
           CODEX_OUTCOME: ${{ steps.run_codex.outcome }}
+          EST_FILES_CHANGED: ${{ steps.estimate.outputs.files_changed }}
+          EST_LINE_DELTA: ${{ steps.estimate.outputs.line_delta }}
+          EST_INPUT_TOKENS: ${{ steps.estimate.outputs.est_input_tokens }}
+          EST_OUTPUT_TOKENS: ${{ steps.estimate.outputs.est_output_tokens }}
+          EST_COST_USD: ${{ steps.estimate.outputs.est_cost_usd }}
         with:
           github-token: ${{ github.token }}
           script: |
@@ -104,6 +136,23 @@ jobs:
             const codexRan = process.env.CODEX_RAN === 'true';
             const codexOutcome = process.env.CODEX_OUTCOME || 'skipped';
             const codexMessage = (process.env.CODEX_MESSAGE || '').trim();
+
+            const filesChanged = process.env.EST_FILES_CHANGED || 'n/a';
+            const lineDelta = process.env.EST_LINE_DELTA || 'n/a';
+            const estInputTokens = process.env.EST_INPUT_TOKENS || 'n/a';
+            const estOutputTokens = process.env.EST_OUTPUT_TOKENS || 'n/a';
+            const estCostUsd = process.env.EST_COST_USD || 'n/a';
+            const estimateBlock = [
+              '',
+              '#### Estimated run cost (rough)',
+              `- Files changed: ${filesChanged}`,
+              `- Line delta (+/-): ${lineDelta}`,
+              `- Estimated input tokens: ${estInputTokens}`,
+              `- Estimated output tokens: ${estOutputTokens}`,
+              `- Estimated cost (USD): $${estCostUsd}`,
+              '',
+              '_Estimate uses heuristics and configurable pricing defaults in workflow (`INPUT_COST_PER_1M`, `OUTPUT_COST_PER_1M`)._'
+            ].join('\n');
 
             let body;
             if (!codexRan) {
@@ -122,6 +171,7 @@ jobs:
                 '',
                 'Codex review run did not complete successfully in this execution.',
                 'Please re-run this workflow to retry.',
+                estimateBlock,
                 '',
                 '_This review is advisory and non-blocking._'
               ].join('\n');
@@ -129,6 +179,7 @@ jobs:
               body = [
                 marker,
                 codexMessage,
+                estimateBlock,
                 '',
                 '_This review is advisory and non-blocking._'
               ].join('\n');
