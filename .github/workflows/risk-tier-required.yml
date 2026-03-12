@@ -225,7 +225,9 @@ jobs:
             }
 
       - name: LLM classify + label (non-forced cases)
+        id: llm_classify
         if: steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -255,8 +257,8 @@ jobs:
                  - [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)
                  - [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)
 
-      - name: Fallback if LLM unavailable
-        if: steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN == ''
+      - name: Fallback if LLM unavailable or failed
+        if: steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true' && (env.CLAUDE_CODE_OAUTH_TOKEN == '' || steps.llm_classify.outcome != 'success')
         uses: actions/github-script@v7
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -282,7 +284,7 @@ jobs:
               marker,
               '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH** (fallback)',
               '',
-              'LLM classification was unavailable. Defaulting to high risk as a precaution. Human review is required before merging.',
+              'LLM classification was unavailable or failed. Defaulting to high risk as a precaution. Human review is required before merging.',
               '',
               '**Resources:**',
               '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
