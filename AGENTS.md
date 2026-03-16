@@ -25,12 +25,16 @@ Configured at: `github.com/organizations/phishfort/settings/rules/13230835`
 
 - Ruleset name: `org-level-risk-tier`
 - Enforcement: active
-- Targets: specific repos by ID, default branch
+- Targets: specific repos by ID, branch target set includes `Default`, `main`, and `master`
 - Required workflow: `.github/workflows/risk-tier-required.yml` from this repo at `refs/heads/main`
 - Required pull request reviews: 1 approval, dismiss stale reviews on new commits
 - Bypass: org admins
 
 To add a repo: edit the ruleset and add the repo to the target list.
+
+Branch targeting is intentionally broad to avoid coverage gaps in mixed branch-strategy repos:
+- `Default` catches each repo's current default branch
+- `main` and `master` catch explicit release-target PRs (for example `develop -> main`)
 
 **Consumer repos do NOT need any workflow file.** The org ruleset injects `risk-tier-required.yml` automatically on PRs.
 
