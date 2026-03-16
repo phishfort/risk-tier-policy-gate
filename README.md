@@ -42,7 +42,18 @@ risk-tier-conditions.md                   ← full policy Claude reads for class
 
 1. Get the repo ID: `gh api repos/phishfort/REPO_NAME --jq '.id'`
 2. Add it to the [org ruleset](https://github.com/organizations/phishfort/settings/rules/13230835) target list
-3. Done — next PR on that repo will be classified automatically
+3. Ensure ruleset branch targeting includes `Default`, `main`, and `master` (for mixed repos where `develop` may be default)
+4. Done — next PR on that repo will be classified automatically
+
+### Branch targeting note (important)
+
+To ensure release PRs like `develop -> main` are covered org-wide, target these branches in the ruleset:
+
+- `Default`
+- `main`
+- `master`
+
+This avoids gaps in repos where `develop`/`development` is the default branch.
 
 ## Modifying the policy
 
