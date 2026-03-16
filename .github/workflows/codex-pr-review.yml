@@ -1,195 +1,69 @@
-name: "🤖 Codex PR Review"
+name: Perform a code review when a pull request is created.
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - '**/*.md'
-      - '**/*.txt'
-      - 'docs/**'
-      - '**/*.png'
-      - '**/*.jpg'
-      - '**/*.jpeg'
-      - '**/*.gif'
-      - '**/*.svg'
-      - '**/*.webp'
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
+    types: [opened]
 
 jobs:
-  codex-review:
-    if: github.event.pull_request.draft == false
+  codex:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    permissions:
+      contents: read
     outputs:
-      codex_message: ${{ steps.run_codex.outputs.final-message }}
-      codex_ran: ${{ steps.gate.outputs.codex_ran }}
-
+      final_message: ${{ steps.run_codex.outputs.final-message }}
     steps:
-      - name: Gate on OpenAI API key
-        id: gate
-        run: |
-          if [ -n "${{ secrets.OPENAI_ORG_WORKFLOW_API_KEY }}" ]; then
-            echo "codex_ran=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "codex_ran=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout PR merge ref
-        if: steps.gate.outputs.codex_ran == 'true'
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
         with:
+          # Explicitly check out the PR's merge commit.
           ref: refs/pull/${{ github.event.pull_request.number }}/merge
-          fetch-depth: 0
 
-      - name: Pre-fetch PR base and head refs
-        if: steps.gate.outputs.codex_ran == 'true'
+      - name: Pre-fetch base and head refs for the PR
         run: |
           git fetch --no-tags origin \
             ${{ github.event.pull_request.base.ref }} \
             +refs/pull/${{ github.event.pull_request.number }}/head
 
-      - name: Run Codex review
+      # If you want Codex to build and run code, install any dependencies that
+      # need to be downloaded before the "Run Codex" step because Codex's
+      # default sandbox disables network access.
+
+      - name: Run Codex
         id: run_codex
-        if: steps.gate.outputs.codex_ran == 'true'
-        continue-on-error: true
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_ORG_WORKFLOW_API_KEY }}
-          safety-strategy: drop-sudo
-          model: gpt-5-codex
-          effort: medium
-          sandbox: read-only
           prompt: |
-            Review ONLY the changes introduced by this PR and provide concise, high-signal code review feedback.
+            This is PR #${{ github.event.pull_request.number }} for ${{ github.repository }}.
 
-            Repository: ${{ github.repository }}
-            PR: #${{ github.event.pull_request.number }}
+            Review ONLY the changes introduced by the PR, so consider:
+               git log --oneline ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
 
-            Scope for review:
-            - git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
-            - git log --oneline ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
+            Suggest any improvements, potential bugs, or issues.
+            Be concise and specific in your feedback.
 
-            Prioritize:
-            1) correctness bugs
-            2) security risks
-            3) reliability/maintainability concerns
-            4) simplification opportunities
+            Pull request title and body:
+            ----
+            ${{ github.event.pull_request.title }}
+            ${{ github.event.pull_request.body }}
 
-            Keep feedback practical and non-blocking unless severe.
-            If no issues are found, say that clearly.
-
-            Output format:
-            - Start with: "### 🤖 Codex Review"
-            - Then sections: "Critical", "Important", "Nit/Suggestions", "Summary"
-            - Use file paths and short actionable bullets.
-
-      - name: Estimate review token/cost footprint
-        id: estimate
-        if: steps.gate.outputs.codex_ran == 'true'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          INPUT_COST_PER_1M: '1.50'
-          OUTPUT_COST_PER_1M: '6.00'
-        run: |
-          set -euo pipefail
-
-          FILES_CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" | wc -l | tr -d ' ')
-          LINE_DELTA=$(git diff --shortstat "$BASE_SHA" "$HEAD_SHA" | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
-
-          # Rough heuristic for review-style runs (prompt + diff/context + reasoning overhead).
-          EST_INPUT_TOKENS=$(( 6000 + FILES_CHANGED * 800 + LINE_DELTA * 6 ))
-          if [ "$EST_INPUT_TOKENS" -gt 250000 ]; then EST_INPUT_TOKENS=250000; fi
-          EST_OUTPUT_TOKENS=1200
-
-          EST_COST=$(awk -v it="$EST_INPUT_TOKENS" -v ot="$EST_OUTPUT_TOKENS" -v ip="$INPUT_COST_PER_1M" -v op="$OUTPUT_COST_PER_1M" 'BEGIN { printf "%.4f", (it/1000000)*ip + (ot/1000000)*op }')
-
-          echo "files_changed=$FILES_CHANGED" >> "$GITHUB_OUTPUT"
-          echo "line_delta=$LINE_DELTA" >> "$GITHUB_OUTPUT"
-          echo "est_input_tokens=$EST_INPUT_TOKENS" >> "$GITHUB_OUTPUT"
-          echo "est_output_tokens=$EST_OUTPUT_TOKENS" >> "$GITHUB_OUTPUT"
-          echo "est_cost_usd=$EST_COST" >> "$GITHUB_OUTPUT"
-
-      - name: Upsert Codex review comment
+  post_feedback:
+    runs-on: ubuntu-latest
+    needs: codex
+    if: needs.codex.outputs.final_message != ''
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Report Codex feedback
         uses: actions/github-script@v7
         env:
-          CODEX_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
-          CODEX_RAN: ${{ steps.gate.outputs.codex_ran }}
-          CODEX_OUTCOME: ${{ steps.run_codex.outcome }}
-          EST_FILES_CHANGED: ${{ steps.estimate.outputs.files_changed }}
-          EST_LINE_DELTA: ${{ steps.estimate.outputs.line_delta }}
-          EST_INPUT_TOKENS: ${{ steps.estimate.outputs.est_input_tokens }}
-          EST_OUTPUT_TOKENS: ${{ steps.estimate.outputs.est_output_tokens }}
-          EST_COST_USD: ${{ steps.estimate.outputs.est_cost_usd }}
+          CODEX_FINAL_MESSAGE: ${{ needs.codex.outputs.final_message }}
         with:
           github-token: ${{ github.token }}
           script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const issue_number = context.payload.pull_request.number;
-            const marker = '<!-- codex-pr-review-bot-comment -->';
-
-            const codexRan = process.env.CODEX_RAN === 'true';
-            const codexOutcome = process.env.CODEX_OUTCOME || 'skipped';
-            const codexMessage = (process.env.CODEX_MESSAGE || '').trim();
-
-            const filesChanged = process.env.EST_FILES_CHANGED || 'n/a';
-            const lineDelta = process.env.EST_LINE_DELTA || 'n/a';
-            const estInputTokens = process.env.EST_INPUT_TOKENS || 'n/a';
-            const estOutputTokens = process.env.EST_OUTPUT_TOKENS || 'n/a';
-            const estCostUsd = process.env.EST_COST_USD || 'n/a';
-            const estimateBlock = [
-              '',
-              '#### Estimated run cost (rough)',
-              `- Files changed: ${filesChanged}`,
-              `- Line delta (+/-): ${lineDelta}`,
-              `- Estimated input tokens: ${estInputTokens}`,
-              `- Estimated output tokens: ${estOutputTokens}`,
-              `- Estimated cost (USD): $${estCostUsd}`,
-              '',
-              '_Estimate uses heuristics and configurable pricing defaults in workflow (`INPUT_COST_PER_1M`, `OUTPUT_COST_PER_1M`)._'
-            ].join('\n');
-
-            let body;
-            if (!codexRan) {
-              body = [
-                marker,
-                '### 🤖 Codex Review',
-                '',
-                'Skipped: `OPENAI_ORG_WORKFLOW_API_KEY` is not configured for this repository.',
-                '',
-                '_This review is advisory and non-blocking._'
-              ].join('\n');
-            } else if (!codexMessage || codexOutcome !== 'success') {
-              body = [
-                marker,
-                '### 🤖 Codex Review',
-                '',
-                'Codex review run did not complete successfully in this execution.',
-                'Please re-run this workflow to retry.',
-                estimateBlock,
-                '',
-                '_This review is advisory and non-blocking._'
-              ].join('\n');
-            } else {
-              body = [
-                marker,
-                codexMessage,
-                estimateBlock,
-                '',
-                '_This review is advisory and non-blocking._'
-              ].join('\n');
-            }
-
-            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
-            const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
-
-            if (existing) {
-              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-            } else {
-              await github.rest.issues.createComment({ owner, repo, issue_number, body });
-            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: process.env.CODEX_FINAL_MESSAGE,
+            });
