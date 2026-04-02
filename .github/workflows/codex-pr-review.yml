@@ -6,6 +6,7 @@ on:
 
 jobs:
   codex:
+    if: github.repository != 'phishfort/risk-tier-policy-gate'
     runs-on: ubuntu-latest
     permissions:
       contents: read
