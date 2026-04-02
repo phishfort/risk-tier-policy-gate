@@ -49,6 +49,7 @@ jobs:
           echo "conditions_path=$CONDITIONS_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Collect changed files
+        id: changed
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
@@ -56,12 +57,61 @@ jobs:
           set -euo pipefail
           git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt
           if [[ ! -s changed-files.txt ]]; then
-            echo "No changed files detected" >&2
-            exit 1
+            echo "No changed files detected — treating as low risk"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "Changed files:" && cat changed-files.txt
           fi
-          echo "Changed files:" && cat changed-files.txt
+
+      - name: Auto low-risk for empty diffs
+        if: steps.changed.outputs.has_changes == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = context.payload.pull_request.number;
+            const botLabelPrefix = 'risktier:';
+            const targetLabel = 'risktier:low';
+
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number });
+            for (const l of labels) {
+              if (l.name.startsWith(botLabelPrefix) && l.name !== targetLabel) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number, name: l.name }).catch(() => {});
+              }
+            }
+
+            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
+
+            const marker = '<!-- risktier-bot-comment -->';
+            const body = [
+              marker,
+              '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **LOW**',
+              '',
+              'No changed files detected (e.g. branch sync or merge-back PR). Auto-approved as low risk.',
+              '',
+              '**Resources:**',
+              '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+              '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+            await github.rest.pulls.createReview({
+              owner, repo, pull_number: issue_number,
+              event: 'APPROVE',
+              body: '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (no changed files detected).'
+            });
 
       - name: PR size check
+        if: steps.changed.outputs.has_changes == 'true'
         id: size
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -80,6 +130,7 @@ jobs:
           echo "Files: $FILE_COUNT, Lines added: $LINE_COUNT, Large PR: $LARGE_PR"
 
       - name: Deterministic risk pre-check
+        if: steps.changed.outputs.has_changes == 'true'
         id: rules
         env:
           RULES_PATH: ${{ steps.resolve.outputs.rules_path }}
@@ -88,7 +139,7 @@ jobs:
           node .risk-tier-policy-gate/scripts/risk-rules.mjs changed-files.txt "$RULES_PATH"
 
       - name: Force high-risk label for large PRs
-        if: steps.size.outputs.large_pr == 'true' && steps.rules.outputs.forced_high != 'true'
+        if: steps.changed.outputs.has_changes == 'true' && steps.size.outputs.large_pr == 'true' && steps.rules.outputs.forced_high != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -130,7 +181,7 @@ jobs:
             }
 
       - name: Force high-risk label from deterministic rules
-        if: steps.rules.outputs.forced_high == 'true' && steps.size.outputs.large_pr != 'true'
+        if: steps.changed.outputs.has_changes == 'true' && steps.rules.outputs.forced_high == 'true' && steps.size.outputs.large_pr != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -185,7 +236,7 @@ jobs:
             }
 
       - name: Auto low-risk label from deterministic rules
-        if: steps.rules.outputs.all_low_safe == 'true' && steps.size.outputs.large_pr != 'true'
+        if: steps.changed.outputs.has_changes == 'true' && steps.rules.outputs.all_low_safe == 'true' && steps.size.outputs.large_pr != 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -226,7 +277,7 @@ jobs:
 
       - name: LLM classify + label (non-forced cases)
         id: llm_classify
-        if: steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        if: steps.changed.outputs.has_changes == 'true' && steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         env:
@@ -258,7 +309,7 @@ jobs:
                  - [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)
 
       - name: Fallback if LLM unavailable or failed
-        if: steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true' && (env.CLAUDE_CODE_OAUTH_TOKEN == '' || steps.llm_classify.outcome != 'success')
+        if: steps.changed.outputs.has_changes == 'true' && steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true' && (env.CLAUDE_CODE_OAUTH_TOKEN == '' || steps.llm_classify.outcome != 'success')
         uses: actions/github-script@v7
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -300,6 +351,7 @@ jobs:
             }
 
       - name: Auto-approve low-risk / dismiss bot approval for high-risk
+        if: steps.changed.outputs.has_changes == 'true'
         uses: actions/github-script@v7
         with:
           script: |
