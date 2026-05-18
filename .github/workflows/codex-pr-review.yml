@@ -23,9 +23,13 @@ jobs:
         env:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # Pass GitHub expressions through env and quote shell expansions.
-          git fetch --no-tags origin \
+          # persist-credentials: false strips the auth header from .git/config,
+          # so pass the token explicitly here (required for private target repos).
+          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')"
+          git -c "http.https://github.com/.extraheader=Authorization: Basic ${auth_header}" \
+            fetch --no-tags origin \
             "$PR_BASE_REF" \
             "+refs/pull/$PR_NUMBER/head"
 
