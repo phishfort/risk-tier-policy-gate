@@ -57,7 +57,14 @@ All PR comments use the `🏰 **PhishFort Risk Tier Profiler**` prefix and inclu
 1. Get the repo ID: `gh api repos/phishfort/REPO_NAME --jq '.id'`
 2. Edit the org ruleset (see Org Ruleset Setup above)
 3. Add the repo ID to the target list
-4. That's it — no workflow file needed in the target repo
+4. Enable Actions PR-approval on the repo (else auto-approve fails with 422):
+   ```
+   gh api -X PUT repos/phishfort/REPO_NAME/actions/permissions/workflow \
+     -f default_workflow_permissions=write \
+     -F can_approve_pull_request_reviews=true
+   ```
+   Or via UI: Settings → Actions → General → Workflow permissions → tick "Allow GitHub Actions to create and approve pull requests".
+5. That's it — no workflow file needed in the target repo
 
 ## Testing
 
