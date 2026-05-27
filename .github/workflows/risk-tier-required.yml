@@ -9,6 +9,10 @@ permissions:
   pull-requests: write
   id-token: write
 
+concurrency:
+  group: risk-tier-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   classify:
     runs-on: ubuntu-latest
@@ -26,24 +30,36 @@ jobs:
           repository: phishfort/risk-tier-policy-gate
           path: .risk-tier-policy-gate
 
+      - name: Check previous classification
+        id: prev
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number
+            });
+            const tier = labels.find(l => l.name.startsWith('risktier:'));
+            const prevLabel = tier ? tier.name : '';
+            const isSync = context.payload.action === 'synchronize';
+            // Use incremental diff when re-running on a push with an existing tier
+            const incremental = isSync && !!prevLabel;
+            core.setOutput('label', prevLabel);
+            core.setOutput('incremental', String(incremental));
+            core.info(`Previous: ${prevLabel || '(none)'}, action: ${context.payload.action}, incremental: ${incremental}`);
+
       - name: Resolve policy file paths
         id: resolve
         shell: bash
         run: |
           set -euo pipefail
 
-          CENTRAL_RULES=".risk-tier-policy-gate/config/risk-rules.json"
-          CENTRAL_CONDITIONS=".risk-tier-policy-gate/risk-tier-conditions.md"
-
-          RULES_PATH="$CENTRAL_RULES"
-          if [[ -f "risk-rules.json" ]]; then
-            RULES_PATH="risk-rules.json"
-          fi
-
-          CONDITIONS_PATH="$CENTRAL_CONDITIONS"
-          if [[ -f "risk-tier-conditions.md" ]]; then
-            CONDITIONS_PATH="risk-tier-conditions.md"
-          fi
+          # Always use central policy files — never local overrides from the PR branch.
+          # A PR could include a malicious risk-rules.json to bypass deterministic checks.
+          # Repo-specific policy should be configured via the central repo, not per-PR files.
+          RULES_PATH=".risk-tier-policy-gate/config/risk-rules.json"
+          CONDITIONS_PATH=".risk-tier-policy-gate/risk-tier-conditions.md"
 
           echo "rules_path=$RULES_PATH" >> "$GITHUB_OUTPUT"
           echo "conditions_path=$CONDITIONS_PATH" >> "$GITHUB_OUTPUT"
@@ -51,11 +67,30 @@ jobs:
       - name: Collect changed files
         id: changed
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
+          INCREMENTAL: ${{ steps.prev.outputs.incremental }}
         run: |
           set -euo pipefail
-          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt
+
+          # Always produce the full PR diff (for size check and reconcile)
+          git diff --name-only "$FULL_BASE_SHA" "$HEAD_SHA" > full-changed-files.txt
+
+          # For classification: use incremental diff on synchronize, full diff otherwise
+          # On force push, BEFORE_SHA may reference a rewritten commit not in history — fall back to full diff
+          if [[ "$INCREMENTAL" == "true" && -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            echo "Incremental mode: evaluating only new commits ($BEFORE_SHA → $HEAD_SHA)"
+            git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" > changed-files.txt
+          else
+            if [[ "$INCREMENTAL" == "true" ]]; then
+              echo "Force push detected — BEFORE_SHA ($BEFORE_SHA) not in history, falling back to full diff"
+            else
+              echo "Full mode: evaluating entire PR diff"
+            fi
+            cp full-changed-files.txt changed-files.txt
+          fi
+
           if [[ ! -s changed-files.txt ]]; then
             echo "No changed files detected — treating as low risk"
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
@@ -72,31 +107,56 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.payload.pull_request.number;
+            const prevLabel = '${{ steps.prev.outputs.label }}';
             const botLabelPrefix = 'risktier:';
-            const targetLabel = 'risktier:low';
 
-            const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number });
-            for (const l of labels) {
-              if (l.name.startsWith(botLabelPrefix) && l.name !== targetLabel) {
-                await github.rest.issues.removeLabel({ owner, repo, issue_number, name: l.name }).catch(() => {});
+            // Don't downgrade from high to low — keep existing high label
+            if (prevLabel === 'risktier:high') {
+              core.info('Empty incremental diff on high-risk PR — label maintained, no approval action');
+            } else {
+              const targetLabel = 'risktier:low';
+              const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number });
+              for (const l of labels) {
+                if (l.name.startsWith(botLabelPrefix) && l.name !== targetLabel) {
+                  await github.rest.issues.removeLabel({ owner, repo, issue_number, name: l.name }).catch(() => {});
+                }
+              }
+              await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
+
+              // Only auto-approve on first run (no previous label)
+              if (!prevLabel) {
+                await github.rest.pulls.createReview({
+                  owner, repo, pull_number: issue_number,
+                  event: 'APPROVE',
+                  body: '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (no changed files detected).'
+                });
               }
             }
 
-            await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
-
             const marker = '<!-- risktier-bot-comment -->';
-            const body = [
-              marker,
-              '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **LOW**',
-              '',
-              'No changed files detected (e.g. branch sync or merge-back PR). Auto-approved as low risk.',
-              '',
-              '**Resources:**',
-              '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
-              '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
-            ].join('\n');
+            const body = prevLabel === 'risktier:high'
+              ? [
+                  marker,
+                  '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH** (maintained)',
+                  '',
+                  'No new changes detected in latest push. Previous high-risk classification maintained.',
+                  '',
+                  '**Resources:**',
+                  '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+                  '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
+                ].join('\n')
+              : [
+                  marker,
+                  '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **LOW**',
+                  '',
+                  'No changed files detected (e.g. branch sync or merge-back PR). Auto-approved as low risk.',
+                  '',
+                  '**Resources:**',
+                  '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+                  '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
+                ].join('\n');
 
-            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
             const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
@@ -104,30 +164,44 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
 
-            await github.rest.pulls.createReview({
-              owner, repo, pull_number: issue_number,
-              event: 'APPROVE',
-              body: '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (no changed files detected).'
-            });
-
-      - name: PR size check
+      - name: PR size check (always full PR diff)
         if: steps.changed.outputs.has_changes == 'true'
         id: size
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
           HEAD_SHA: ${{ github.sha }}
+          INCREMENTAL: ${{ steps.prev.outputs.incremental }}
         run: |
           set -euo pipefail
-          FILE_COUNT=$(wc -l < changed-files.txt | tr -d ' ')
-          LINE_COUNT=$(git diff --shortstat "$BASE_SHA" "$HEAD_SHA" | grep -oP '\d+ insertion' | grep -oP '\d+' || echo 0)
-          echo "file_count=$FILE_COUNT" >> "$GITHUB_OUTPUT"
-          echo "line_count=$LINE_COUNT" >> "$GITHUB_OUTPUT"
+
+          # Full PR size — always evaluated against the complete PR diff
+          FULL_FILE_COUNT=$(wc -l < full-changed-files.txt | tr -d ' ')
+          FULL_LINE_COUNT=$(git diff --shortstat "$FULL_BASE_SHA" "$HEAD_SHA" | grep -oP '\d+ insertion' | grep -oP '\d+' || echo 0)
           LARGE_PR=false
-          if [[ "$FILE_COUNT" -ge 50 ]] || [[ "$LINE_COUNT" -ge 1000 ]]; then
+          if [[ "$FULL_FILE_COUNT" -ge 50 ]] || [[ "$FULL_LINE_COUNT" -ge 1000 ]]; then
             LARGE_PR=true
           fi
+          echo "file_count=$FULL_FILE_COUNT" >> "$GITHUB_OUTPUT"
+          echo "line_count=$FULL_LINE_COUNT" >> "$GITHUB_OUTPUT"
           echo "large_pr=$LARGE_PR" >> "$GITHUB_OUTPUT"
-          echo "Files: $FILE_COUNT, Lines added: $LINE_COUNT, Large PR: $LARGE_PR"
+          echo "Full PR — Files: $FULL_FILE_COUNT, Lines added: $FULL_LINE_COUNT, Large: $LARGE_PR"
+
+          # Incremental size — used to decide re-review on large PRs
+          # On force push, BEFORE_SHA may not exist — treat as large (full re-review)
+          INCR_LARGE=false
+          if [[ "$INCREMENTAL" == "true" && -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
+            INCR_FILE_COUNT=$(wc -l < changed-files.txt | tr -d ' ')
+            INCR_LINE_COUNT=$(git diff --shortstat "$BEFORE_SHA" "$HEAD_SHA" | grep -oP '\d+ insertion' | grep -oP '\d+' || echo 0)
+            if [[ "$INCR_FILE_COUNT" -ge 50 ]] || [[ "$INCR_LINE_COUNT" -ge 1000 ]]; then
+              INCR_LARGE=true
+            fi
+            echo "Incremental — Files: $INCR_FILE_COUNT, Lines added: $INCR_LINE_COUNT, Large: $INCR_LARGE"
+          elif [[ "$INCREMENTAL" == "true" ]]; then
+            echo "Force push detected — treating incremental as large (conservative)"
+            INCR_LARGE=true
+          fi
+          echo "incr_large=$INCR_LARGE" >> "$GITHUB_OUTPUT"
 
       - name: Deterministic risk pre-check
         if: steps.changed.outputs.has_changes == 'true'
@@ -172,7 +246,7 @@ jobs:
               '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
             ].join('\n');
 
-            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
             const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
@@ -181,7 +255,7 @@ jobs:
             }
 
       - name: Force high-risk label from deterministic rules
-        if: steps.changed.outputs.has_changes == 'true' && steps.rules.outputs.forced_high == 'true' && steps.size.outputs.large_pr != 'true'
+        if: steps.changed.outputs.has_changes == 'true' && steps.rules.outputs.forced_high == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -202,6 +276,10 @@ jobs:
             await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [targetLabel] });
 
             const result = JSON.parse(fs.readFileSync('risk-result.json', 'utf8'));
+            const largePr = '${{ steps.size.outputs.large_pr }}' === 'true';
+            const fileCount = '${{ steps.size.outputs.file_count }}';
+            const lineCount = '${{ steps.size.outputs.line_count }}';
+
             const byCategory = {};
             for (const hit of result.high_hits) {
               (byCategory[hit.category] ??= []).push(hit.file);
@@ -213,11 +291,18 @@ jobs:
             });
 
             const marker = '<!-- risktier-bot-comment -->';
-            const body = [
+            const bodyParts = [
               marker,
               '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH**',
               '',
               'Flagged by deterministic policy rules. Human review is required before merging.',
+            ];
+
+            if (largePr) {
+              bodyParts.push(`This PR is also large (${fileCount} files, ${lineCount}+ lines added).`);
+            }
+
+            bodyParts.push(
               '',
               '**Triggered rules:**',
               ...triggerLines,
@@ -225,9 +310,11 @@ jobs:
               '**Resources:**',
               '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
               '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
-            ].join('\n');
+            );
 
-            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const body = bodyParts.join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
             const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
@@ -267,7 +354,7 @@ jobs:
               '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
             ].join('\n');
 
-            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
             const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
@@ -342,7 +429,7 @@ jobs:
               '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
             ].join('\n');
 
-            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
             const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
@@ -350,42 +437,188 @@ jobs:
               await github.rest.issues.createComment({ owner, repo, issue_number, body });
             }
 
-      - name: Auto-approve low-risk / dismiss bot approval for high-risk
+      - name: Reconcile tier and manage bot approval
         if: steps.changed.outputs.has_changes == 'true'
         uses: actions/github-script@v7
         with:
           script: |
+            const fs = require('fs');
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const pr_number = context.payload.pull_request.number;
+            const prevLabel = '${{ steps.prev.outputs.label }}';
+            const incremental = '${{ steps.prev.outputs.incremental }}' === 'true';
+            const largePr = '${{ steps.size.outputs.large_pr }}' === 'true';
+            const incrLarge = '${{ steps.size.outputs.incr_large }}' === 'true';
 
+            // Read the label that classification just set (the "incremental tier")
             const { data: labels } = await github.rest.issues.listLabelsOnIssue({
               owner, repo, issue_number: pr_number
             });
             const tierLabel = labels.find(l => l.name.startsWith('risktier:'));
             if (!tierLabel) {
-              core.warning('No risktier label found — skipping auto-approve');
+              core.warning('No risktier label found — skipping approval management');
               return;
             }
 
-            if (tierLabel.name === 'risktier:low') {
-              await github.rest.pulls.createReview({
-                owner, repo, pull_number: pr_number,
-                event: 'APPROVE',
-                body: '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (low risk).'
-              });
-              core.info('Auto-approved low-risk PR');
-            } else if (tierLabel.name === 'risktier:high') {
+            const incrementalTier = tierLabel.name;
+
+            const headSha = context.payload.pull_request.head.sha;
+
+            // --- Helper: glob-to-regex (matches risk-rules.mjs logic) ---
+            function toRegex(glob) {
+              const escaped = glob
+                .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                .replace(/\*\*\//g, '::DS::')
+                .replace(/\*\*/g, '::D::')
+                .replace(/\*/g, '[^/]*')
+                .replace(/::DS::/g, '(.*/)?')
+                .replace(/::D::/g, '.*');
+              return new RegExp(`^${escaped}$`);
+            }
+
+            // --- Helper: load high-risk matchers from rules file ---
+            let highRiskMatchers;
+            try {
+              const rulesPath = '${{ steps.resolve.outputs.rules_path }}';
+              const rules = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
+              highRiskMatchers = rules.highRiskCategories.map(cat => ({
+                name: cat.name,
+                regexes: cat.patterns.map(toRegex),
+              }));
+            } catch (e) {
+              core.warning(`Could not load risk rules: ${e.message}`);
+              highRiskMatchers = null; // will fail-safe to dismiss
+            }
+
+            // --- Helper: check if a list of files contains high-risk patterns ---
+            function filesHaveHighRiskPatterns(files) {
+              if (!highRiskMatchers) return true; // fail safe
+              return highRiskMatchers.some(cat =>
+                cat.regexes.some(re => files.some(f => re.test(f)))
+              );
+            }
+
+            // --- Helper: check if full PR diff has high-risk patterns ---
+            function fullDiffHasHighRiskPatterns() {
+              try {
+                const fullFiles = fs.readFileSync('full-changed-files.txt', 'utf8').split('\n').filter(Boolean);
+                return filesHaveHighRiskPatterns(fullFiles);
+              } catch (e) {
+                core.warning(`Could not check full diff patterns: ${e.message}`);
+                return true; // fail safe
+              }
+            }
+
+
+            // --- Helper: update or create bot comment ---
+            async function upsertComment(body) {
+              const marker = '<!-- risktier-bot-comment -->';
+              const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number: pr_number, per_page: 100 });
+              const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number: pr_number, body });
+              }
+            }
+
+            // --- Reconcile label: prevent inappropriate downgrades ---
+            let preventDowngrade = false;
+
+            if (incremental && prevLabel === 'risktier:high' && incrementalTier === 'risktier:low') {
+              // New commits classified low, but prev was high. Should we prevent downgrade?
+              if (largePr) {
+                // Full PR is still large — keep high (size gate still applies)
+                preventDowngrade = true;
+              } else if (fullDiffHasHighRiskPatterns()) {
+                // Full PR still has high-risk file patterns — keep high (pattern gate is sticky)
+                preventDowngrade = true;
+              }
+              // else: PR shrunk below size threshold AND no pattern-based risk in full diff
+              // → allow downgrade (scenario #3: size-only high that was resolved)
+
+              if (preventDowngrade) {
+                await github.rest.issues.removeLabel({ owner, repo, issue_number: pr_number, name: 'risktier:low' }).catch(() => {});
+                await github.rest.issues.addLabels({ owner, repo, issue_number: pr_number, labels: ['risktier:high'] });
+
+                const marker = '<!-- risktier-bot-comment -->';
+                await upsertComment([
+                  marker,
+                  '🏰 **PhishFort Risk Tier Profiler** — Risk tier: **HIGH** (maintained)',
+                  '',
+                  'New commits are low-risk, but this PR was previously classified as high-risk.',
+                  'The high-risk classification is maintained.',
+                  '',
+                  '**Resources:**',
+                  '- [Risk tier policy conditions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/risk-tier-conditions.md)',
+                  '- [Deterministic rule definitions](https://github.com/phishfort/risk-tier-policy-gate/blob/main/config/risk-rules.json)'
+                ].join('\n'));
+
+                core.info('Restored high-risk label — new commits are low-risk but PR remains high-risk');
+              }
+            }
+
+            // --- Manage bot approval ---
+            // This workflow only manages the github-actions[bot] approval.
+            // Human approvals persist across pushes (org ruleset has "dismiss stale reviews" disabled).
+
+            const effectiveTier = preventDowngrade ? 'risktier:high' : incrementalTier;
+
+            if (effectiveTier === 'risktier:low') {
+              // Auto-approve only on first classification or when downgrading from high
+              // (existing bot approval persists across pushes since dismiss-stale-reviews is off)
+              if (!incremental || prevLabel !== 'risktier:low') {
+                await github.rest.pulls.createReview({
+                  owner, repo, pull_number: pr_number,
+                  event: 'APPROVE',
+                  body: incremental && prevLabel === 'risktier:high'
+                    ? '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (PR no longer exceeds size threshold; new commits are low-risk).'
+                    : '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (low risk).'
+                });
+                core.info('Bot auto-approved — low risk');
+              } else {
+                core.info('Low-risk — existing bot approval persists, no action needed');
+              }
+
+            } else if (effectiveTier === 'risktier:high') {
+
+              // If prev was already high and new commits are low-risk (downgrade prevented),
+              // do nothing — human approval persists on its own. Bot has no approval to manage.
+              // But if new commits are themselves high-risk (incrementalTier is high),
+              // fall through to dismiss/request so the behavior matches opening a fresh PR.
+              if (preventDowngrade && !incrLarge) {
+                core.info('High-risk maintained, new commits are low-risk — no bot approval action needed');
+                return;
+              }
+
+              // Selectively dismiss approvals: only if the diff since that reviewer's
+              // commit contains high-risk changes (they haven't reviewed the risky code)
               const { data: reviews } = await github.rest.pulls.listReviews({
-                owner, repo, pull_number: pr_number
+                owner, repo, pull_number: pr_number, per_page: 100
               });
               for (const review of reviews) {
-                if (review.user.login === 'github-actions[bot]' && review.state === 'APPROVED') {
+                if (review.state !== 'APPROVED') continue;
+
+                // Optimization: we only reach this code when the incremental diff
+                // is high-risk. Any approval at the current HEAD was given AFTER
+                // those changes — the reviewer saw them, so keep it. All older
+                // approvals predate the high-risk changes and must be dismissed.
+                if (review.commit_id === headSha) {
+                  core.info(`Keeping ${review.user.login}'s approval (reviewed at current HEAD ${headSha.slice(0, 7)})`);
+                  continue;
+                }
+
+                const who = review.user.login === 'github-actions[bot]' ? 'bot' : review.user.login;
+                core.info(`Dismissing ${who}'s approval (reviewed at ${review.commit_id.slice(0, 7)}, predates high-risk changes)`);
+                try {
                   await github.rest.pulls.dismissReview({
                     owner, repo, pull_number: pr_number,
                     review_id: review.id,
-                    message: '🏰 **PhishFort Risk Tier Profiler** — Dismissing auto-approval. PR re-classified as HIGH risk. Human review required.'
+                    message: '🏰 **PhishFort Risk Tier Profiler** — Dismissing approval. High-risk changes were pushed after your review. Fresh review required.'
                   });
+                } catch (err) {
+                  core.warning(`Failed to dismiss ${who}'s review ${review.id} (${err.status}): ${err.message}`);
                 }
               }
 

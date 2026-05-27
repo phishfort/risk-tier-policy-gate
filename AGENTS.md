@@ -15,7 +15,16 @@ risk-tier-conditions.md ← policy doc Claude reads for non-deterministic classi
 
 **Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high → finally, auto-approve low-risk PRs or dismiss bot approvals and request reviews from write-access collaborators for high-risk PRs.
 
-**Merge blocking:** The `org-level-risk-tier` ruleset also requires 1 PR review (dismiss stale reviews on push). The workflow auto-approves `risktier:low` PRs via bot review. `risktier:high` PRs auto-request reviews from collaborators with write access and require human review. New pushes dismiss stale reviews, triggering re-classification.
+**Incremental evaluation:** On `synchronize` (new push) events, the workflow evaluates the incremental diff (`before`→`sha`) for pattern/LLM classification, while the PR size check always uses the full PR diff. On `opened`/`reopened` events (or when no previous tier label exists), the full PR diff is evaluated for everything.
+
+- **Pattern-based high → low follow-up (no downgrade):** If a PR was classified `risktier:high` due to file patterns and a follow-up push only touches low-risk files, the high label is maintained. The bot takes no approval action; existing human approval persists.
+- **Low → high (escalation):** If a PR was `risktier:low` (bot auto-approved) and a follow-up push contains high-risk changes, the bot dismisses its own auto-approval, escalates to `risktier:high`, and requests human reviewers.
+- **Size-based high is dynamic:** The PR size check (≥50 files or ≥1000 lines) always evaluates the full PR diff and can go in either direction. If a follow-up commit reduces the PR below the size threshold and there are no pattern-based high-risk files, the PR can downgrade to low.
+- **Large PR + small follow-up:** If a large PR receives a small follow-up commit, the bot takes no action — existing human approval persists. If the follow-up itself exceeds size thresholds, the bot dismisses its own approval and requests reviewers.
+
+**Approval management:** The org ruleset has "dismiss stale reviews on push" **disabled** — approvals persist across pushes by default. When new commits are high-risk, the workflow selectively dismisses approvals: for each existing approval, it diffs the reviewer's `commit_id` against the current HEAD and only dismisses if that diff contains high-risk file patterns. Approvals given after the high-risk changes (at the current HEAD) are preserved. When new commits are low-risk, all approvals are left untouched.
+
+**Merge blocking:** The `org-level-risk-tier` ruleset requires 1 PR review. The workflow auto-approves `risktier:low` PRs via bot review. `risktier:high` PRs auto-request reviews from collaborators with write access and require human review.
 
 **Review requests:** On high-risk PRs, the workflow calls `repos.listCollaborators` with `permission: push` to find eligible reviewers (excluding the PR author). Team-based review requests (`team_reviewers`) don't work because the `GITHUB_TOKEN` can't resolve org team slugs (403/422).
 
@@ -27,7 +36,7 @@ Configured at: `github.com/organizations/phishfort/settings/rules/13230835`
 - Enforcement: active
 - Targets: specific repos by ID, branch target set includes `Default`, `main`, and `master`
 - Required workflow: `.github/workflows/risk-tier-required.yml` from this repo at `refs/heads/main`
-- Required pull request reviews: 1 approval, dismiss stale reviews on new commits
+- Required pull request reviews: 1 approval, dismiss stale reviews **disabled** (workflow manages bot approval explicitly)
 - Bypass: org admins
 
 To add a repo: edit the ruleset and add the repo to the target list.
