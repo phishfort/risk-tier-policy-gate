@@ -69,7 +69,7 @@ jobs:
         env:
           FULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           INCREMENTAL: ${{ steps.prev.outputs.incremental }}
         run: |
           set -euo pipefail
@@ -81,7 +81,13 @@ jobs:
           # On force push, BEFORE_SHA may reference a rewritten commit not in history — fall back to full diff
           if [[ "$INCREMENTAL" == "true" && -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
             echo "Incremental mode: evaluating only new commits ($BEFORE_SHA → $HEAD_SHA)"
-            git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" > changed-files.txt
+            git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" > raw-incremental.txt
+            # Intersect with the full PR diff to filter out files brought in by
+            # merging the base branch into the PR branch.  Files that now match
+            # the base exactly don't appear in full-changed-files.txt, so the
+            # intersection drops them from the incremental evaluation.
+            comm -12 <(sort raw-incremental.txt) <(sort full-changed-files.txt) > changed-files.txt
+            echo "Raw incremental files: $(wc -l < raw-incremental.txt | tr -d ' '), after filtering: $(wc -l < changed-files.txt | tr -d ' ')"
           else
             if [[ "$INCREMENTAL" == "true" ]]; then
               echo "Force push detected — BEFORE_SHA ($BEFORE_SHA) not in history, falling back to full diff"
@@ -170,7 +176,7 @@ jobs:
         env:
           FULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BEFORE_SHA: ${{ github.event.before }}
-          HEAD_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           INCREMENTAL: ${{ steps.prev.outputs.incremental }}
         run: |
           set -euo pipefail
@@ -192,7 +198,12 @@ jobs:
           INCR_LARGE=false
           if [[ "$INCREMENTAL" == "true" && -n "$BEFORE_SHA" ]] && git cat-file -e "$BEFORE_SHA" 2>/dev/null; then
             INCR_FILE_COUNT=$(wc -l < changed-files.txt | tr -d ' ')
-            INCR_LINE_COUNT=$(git diff --shortstat "$BEFORE_SHA" "$HEAD_SHA" | grep -oP '\d+ insertion' | grep -oP '\d+' || echo 0)
+            # Scope line count to the filtered incremental files (excludes merge-in noise)
+            if [[ "$INCR_FILE_COUNT" -gt 0 ]]; then
+              INCR_LINE_COUNT=$(git diff --numstat "$BEFORE_SHA" "$HEAD_SHA" -- $(cat changed-files.txt) | awk '{s+=$1} END {print s+0}')
+            else
+              INCR_LINE_COUNT=0
+            fi
             if [[ "$INCR_FILE_COUNT" -ge 50 ]] || [[ "$INCR_LINE_COUNT" -ge 1000 ]]; then
               INCR_LARGE=true
             fi
