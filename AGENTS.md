@@ -10,19 +10,26 @@ Central policy repo that auto-classifies PRs as `risktier:high` or `risktier:low
 risk-tier-required.yml  ← org-level required workflow (the main entrypoint)
 config/risk-rules.json  ← deterministic pattern rules (high-risk file globs)
 scripts/risk-rules.mjs  ← evaluates changed files against risk-rules.json
+scripts/risk-transition.mjs ← approval transition and stale-review policy
+scripts/risk-glob.mjs   ← shared glob-to-regex implementation
 risk-tier-conditions.md ← policy doc Claude reads for non-deterministic classification
 ```
 
 **Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high → finally, auto-approve low-risk PRs or dismiss bot approvals and request reviews from write-access collaborators for high-risk PRs.
 
-**Incremental evaluation:** On `synchronize` (new push) events, the workflow evaluates the incremental diff (`before`→`sha`) for pattern/LLM classification, while the PR size check always uses the full PR diff. On `opened`/`reopened` events (or when no previous tier label exists), the full PR diff is evaluated for everything.
+**Full-PR classification:** Every `opened`, `reopened`, and `synchronize` run classifies the complete current PR diff (`base.sha...head.sha`, using merge-base PR semantics). Changed filenames are transported NUL-delimited. The label is never derived from only the latest push. A previous `risktier:high` changes to `risktier:low` only when the complete current PR is reclassified as low, at which point the bot auto-approves it.
 
-- **Pattern-based high → low follow-up (no downgrade):** If a PR was classified `risktier:high` due to file patterns and a follow-up push only touches low-risk files, the high label is maintained. The bot takes no approval action; existing human approval persists.
-- **Low → high (escalation):** If a PR was `risktier:low` (bot auto-approved) and a follow-up push contains high-risk changes, the bot dismisses its own auto-approval, escalates to `risktier:high`, and requests human reviewers.
-- **Size-based high is dynamic:** The PR size check (≥50 files or ≥1000 lines) always evaluates the full PR diff and can go in either direction. If a follow-up commit reduces the PR below the size threshold and there are no pattern-based high-risk files, the PR can downgrade to low.
-- **Large PR + small follow-up:** If a large PR receives a small follow-up commit, the bot takes no action — existing human approval persists. If the follow-up itself exceeds size thresholds, the bot dismisses its own approval and requests reviewers.
+**Review-relative approval freshness:** Whenever the full PR is high, the workflow evaluates every active approval against current HEAD. Bot approval is always dismissed on high. Human approval at current HEAD is preserved. For older human approval, the workflow evaluates the complete net diff from that review's `commit_id` to HEAD, filtered to files still in the current PR. Approval persists only when every file is deterministically low-safe and the delta stays below size gates; unknown code, missing commits, or evaluation errors require fresh review.
 
-**Approval management:** The org ruleset has "dismiss stale reviews on push" **disabled** — approvals persist across pushes by default. When new commits are high-risk, the workflow selectively dismisses approvals: for each existing approval, it diffs the reviewer's `commit_id` against the current HEAD and only dismisses if that diff contains high-risk file patterns. Approvals given after the high-risk changes (at the current HEAD) are preserved. When new commits are low-risk, all approvals are left untouched.
+- **High → high + low-risk follow-up:** The full PR remains `risktier:high`. Existing human approval persists only when all net changes since that approval are proven deterministically low-safe.
+- **High → high + risky/unknown follow-up:** The full PR remains `risktier:high`; approvals at older commits are dismissed and fresh human review is requested.
+- **High → low:** The complete current PR is now low-risk (for example, risky changes were removed or the PR shrank below the size threshold), so the bot applies `risktier:low` and auto-approves.
+- **Low → high:** The complete current PR is now high-risk, so the bot dismisses its old auto-approval and requests human reviewers.
+- **Size-based high is dynamic:** The PR size check (≥50 files or ≥1000 lines) evaluates the full PR diff and can move the aggregate tier in either direction.
+
+**Approval management:** The org ruleset has "dismiss stale reviews on push" **disabled** — approvals persist across pushes by default. Per-PR workflow runs are serialized (`cancel-in-progress: false`), with newer pending events allowed to coalesce. The workflow paginates all reviews, uses only each account's latest effective review, and reconciles approvals from their own reviewed commit. Approval-delta file and insertion counts are filtered to files still present in the current PR, so base-branch merge-in churn is excluded. Required dismissal errors fail the workflow, and the workflow verifies targeted approvals are inactive and no bot approval remains before succeeding with a high tier. Review-request failures remain warnings because the review gate still blocks merging.
+
+**Atomic policy checkout:** The central policy checkout is pinned to `github.workflow_sha`, the exact commit that defines the running required workflow. Scripts, deterministic rules, and the workflow therefore roll out as one revision; never change this back to an unpinned `main` checkout.
 
 **Merge blocking:** The `org-level-risk-tier` ruleset requires 1 PR review. The workflow auto-approves `risktier:low` PRs via bot review. `risktier:high` PRs auto-request reviews from collaborators with write access and require human review.
 
@@ -87,4 +94,4 @@ To test on a repo:
 
 - **Deterministic rules:** edit `config/risk-rules.json` — file globs that auto-force `risktier:high`
 - **LLM classification policy:** edit `risk-tier-conditions.md` — Claude reads this to decide tier
-- Changes take effect on next PR (workflow always pulls `@main`)
+- New runs use the required workflow revision selected by the org ruleset; each run pins all co-located policy files to that workflow's exact commit.

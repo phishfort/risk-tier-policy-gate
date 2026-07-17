@@ -2,17 +2,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { toRegex } from './risk-glob.mjs';
+
 const [, , changedFilesPath, rulesPath] = process.argv;
 if (!changedFilesPath || !rulesPath) {
   console.error('Usage: node scripts/risk-rules.mjs <changed-files.txt> <rules.json>');
   process.exit(1);
 }
 
-const changedFiles = fs
-  .readFileSync(changedFilesPath, 'utf8')
-  .split('\n')
-  .map((s) => s.trim())
-  .filter(Boolean);
+const changedFilesBuffer = fs.readFileSync(changedFilesPath);
+const nulDelimited = changedFilesBuffer.includes(0);
+let changedFiles;
+if (nulDelimited) {
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  changedFiles = changedFilesBuffer
+    .toString('latin1')
+    .split('\0')
+    .filter(Boolean)
+    .map((file) => decoder.decode(Buffer.from(file, 'latin1')));
+} else {
+  changedFiles = changedFilesBuffer
+    .toString('utf8')
+    .split('\n')
+    .map((file) => file.trim())
+    .filter(Boolean);
+}
 
 const rules = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
 
@@ -53,17 +67,6 @@ validateRules(rules, rulesPath);
 
 const categories = [];
 const highHits = [];
-
-function toRegex(glob) {
-  const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\//g, '::DOUBLE_STAR_SLASH::')
-    .replace(/\*\*/g, '::DOUBLE_STAR::')
-    .replace(/\*/g, '[^/]*')
-    .replace(/::DOUBLE_STAR_SLASH::/g, '(.*/)?')
-    .replace(/::DOUBLE_STAR::/g, '.*');
-  return new RegExp(`^${escaped}$`);
-}
 
 const highMatchers = rules.highRiskCategories.map((c) => ({
   ...c,
