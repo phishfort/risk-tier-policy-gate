@@ -4,7 +4,7 @@ Automatically classifies pull requests as **high risk** or **low risk** across t
 
 ## How it works
 
-When you open a PR on an enrolled repo:
+When you open or update a PR on an enrolled repo, the complete current PR diff is classified:
 
 1. **Deterministic rules** check your changed files against known high-risk patterns (workflows, auth files, dependencies, etc.) defined in [`config/risk-rules.json`](config/risk-rules.json)
 2. If no deterministic match, **Claude (LLM)** reads the diff and classifies using the policy in [`risk-tier-conditions.md`](risk-tier-conditions.md)
@@ -13,8 +13,10 @@ When you open a PR on an enrolled repo:
 5. **High-risk** PRs auto-request reviews from collaborators with write access and are blocked until a human approves
 
 ```
-PR opened → deterministic rules → (if unclear) LLM classifies → label → auto-approve or block
+Full PR diff → deterministic rules → (if unclear) LLM classifies → label → auto-approve or block
 ```
+
+For a high-risk PR, approval freshness is evaluated from each reviewer's approved commit to current HEAD. This never changes the aggregate label; it only preserves approvals across changes proven deterministically low-risk.
 
 ## What makes a PR high risk?
 
@@ -35,6 +37,9 @@ Anything touching security-sensitive areas: auth, secrets, CI/CD, dependencies, 
 .github/workflows/risk-tier-required.yml  ← the workflow (injected by org ruleset)
 config/risk-rules.json                    ← file patterns that auto-flag high risk
 scripts/risk-rules.mjs                    ← evaluates files against the patterns
+scripts/risk-transition.mjs               ← manages tier transitions and approval freshness
+scripts/risk-glob.mjs                     ← shared glob matching implementation
+scripts/nul-records.mjs                   ← shared byte-safe filename record parsing
 risk-tier-conditions.md                   ← full policy Claude reads for classification
 ```
 
@@ -59,6 +64,6 @@ This avoids gaps in repos where `develop`/`development` is the default branch.
 
 - **Deterministic rules** (file patterns): edit [`config/risk-rules.json`](config/risk-rules.json)
 - **LLM classification policy**: edit [`risk-tier-conditions.md`](risk-tier-conditions.md)
-- Changes take effect on the next PR (workflow always pulls from `main`)
+- New runs use the required workflow revision selected from `main`; scripts and policy files are pinned to that workflow's exact commit for the duration of the run
 
 **Per-repo overrides:** Consumer repos can add their own `risk-tier-conditions.md` or `risk-rules.json` at the repo root. If present, they take precedence over the central defaults.

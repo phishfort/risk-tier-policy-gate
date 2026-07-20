@@ -2,17 +2,36 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { splitNul } from './nul-records.mjs';
+import { toRegex } from './risk-glob.mjs';
+
 const [, , changedFilesPath, rulesPath] = process.argv;
 if (!changedFilesPath || !rulesPath) {
   console.error('Usage: node scripts/risk-rules.mjs <changed-files.txt> <rules.json>');
   process.exit(1);
 }
 
-const changedFiles = fs
-  .readFileSync(changedFilesPath, 'utf8')
-  .split('\n')
-  .map((s) => s.trim())
-  .filter(Boolean);
+const changedFilesBuffer = fs.readFileSync(changedFilesPath);
+const nulDelimited = changedFilesBuffer.includes(0);
+let changedFiles;
+let unsafeFilename = false;
+if (nulDelimited) {
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  changedFiles = splitNul(changedFilesBuffer).map((file, index) => {
+    try {
+      return decoder.decode(file);
+    } catch {
+      unsafeFilename = true;
+      return `<non-UTF-8 filename ${index + 1}>`;
+    }
+  });
+} else {
+  changedFiles = changedFilesBuffer
+    .toString('utf8')
+    .split('\n')
+    .map((file) => file.trim())
+    .filter(Boolean);
+}
 
 const rules = JSON.parse(fs.readFileSync(rulesPath, 'utf8'));
 
@@ -54,15 +73,9 @@ validateRules(rules, rulesPath);
 const categories = [];
 const highHits = [];
 
-function toRegex(glob) {
-  const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\//g, '::DOUBLE_STAR_SLASH::')
-    .replace(/\*\*/g, '::DOUBLE_STAR::')
-    .replace(/\*/g, '[^/]*')
-    .replace(/::DOUBLE_STAR_SLASH::/g, '(.*/)?')
-    .replace(/::DOUBLE_STAR::/g, '.*');
-  return new RegExp(`^${escaped}$`);
+if (unsafeFilename) {
+  categories.push('unsafe_filename');
+  highHits.push({ file: '<non-UTF-8 filename>', category: 'unsafe_filename' });
 }
 
 const highMatchers = rules.highRiskCategories.map((c) => ({
@@ -96,6 +109,7 @@ const lockfileMap = {
 };
 const changedSet = new Set(changedFiles);
 const lockfileOnly =
+  !unsafeFilename &&
   highHits.length > 0 &&
   highHits.every((h) => {
     const basename = path.basename(h.file);
@@ -104,7 +118,7 @@ const lockfileOnly =
     return !changedSet.has(manifest);
   });
 
-const forcedHigh = uniqueCategories.length > 0 && !lockfileOnly;
+const forcedHigh = unsafeFilename || (uniqueCategories.length > 0 && !lockfileOnly);
 const allLowSafe = !forcedHigh && changedFiles.length > 0 && changedFiles.every((f) => lowMatchers.some((r) => r.test(f)));
 
 const result = {
@@ -115,7 +129,9 @@ const result = {
   lockfile_only: lockfileOnly,
   matched_categories: uniqueCategories,
   high_hits: highHits,
-  summary: forcedHigh
+  summary: unsafeFilename
+    ? 'High risk forced because a changed filename is not valid UTF-8'
+    : forcedHigh
     ? `High risk forced by deterministic rules (${uniqueCategories.join(', ')})`
     : lockfileOnly
     ? 'Lockfile-only change (no manifest modified); downgraded from high-risk'
