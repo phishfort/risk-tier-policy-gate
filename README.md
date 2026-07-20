@@ -39,6 +39,7 @@ config/risk-rules.json                    ← file patterns that auto-flag high 
 scripts/risk-rules.mjs                    ← evaluates files against the patterns
 scripts/risk-transition.mjs               ← manages tier transitions and approval freshness
 scripts/risk-glob.mjs                     ← shared glob matching implementation
+scripts/nul-records.mjs                   ← shared byte-safe filename record parsing
 risk-tier-conditions.md                   ← full policy Claude reads for classification
 ```
 

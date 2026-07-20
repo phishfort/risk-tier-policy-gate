@@ -33,7 +33,7 @@ test('risk rules parse NUL-delimited filenames without newline or space ambiguit
   }
 });
 
-test('risk rules fail closed on non-UTF-8 filenames', () => {
+test('risk rules classify non-UTF-8 filenames as high instead of crashing', () => {
   const temp = mkdtempSync(path.join(tmpdir(), 'risk-rules-invalid-'));
   try {
     const changedPath = path.join(temp, 'changed-files.txt');
@@ -47,7 +47,10 @@ test('risk rules fail closed on non-UTF-8 filenames', () => {
       ],
       { cwd: temp, encoding: 'utf8' },
     );
-    assert.notEqual(result.status, 0);
+    assert.equal(result.status, 0, result.stderr);
+    const riskResult = JSON.parse(readFileSync(path.join(temp, 'risk-result.json'), 'utf8'));
+    assert.equal(riskResult.forced_high, true);
+    assert.deepEqual(riskResult.matched_categories, ['unsafe_filename']);
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

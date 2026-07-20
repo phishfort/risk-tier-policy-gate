@@ -21,9 +21,25 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      - name: Resolve current PR revision
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number
+            });
+            core.setOutput('base_sha', pr.base.sha);
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('author', pr.user?.login || '');
+            core.info(`Evaluating live PR head ${pr.head.sha}`);
+
       - name: Checkout caller repository
         uses: actions/checkout@v4
         with:
+          ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -36,29 +52,6 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: .risk-tier-policy-gate
           persist-credentials: false
-
-      - name: Check previous classification
-        id: prev
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const labels = await github.paginate(github.rest.issues.listLabelsOnIssue, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              per_page: 100
-            });
-            const tierNames = new Set(labels.map(l => l.name));
-            // Accept only the two policy-owned labels. If both somehow exist,
-            // treat the previous state as HIGH until full classification repairs
-            // the ambiguity.
-            const prevLabel = tierNames.has('risktier:high')
-              ? 'risktier:high'
-              : tierNames.has('risktier:low')
-              ? 'risktier:low'
-              : '';
-            core.setOutput('label', prevLabel);
-            core.info(`Previous: ${prevLabel || '(none)'}, action: ${context.payload.action}`);
 
       - name: Resolve policy file paths
         id: resolve
@@ -78,15 +71,14 @@ jobs:
       - name: Collect changed files
         id: changed
         env:
-          FULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FULL_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -euo pipefail
 
           # Use GitHub PR (merge-base) semantics and preserve filenames exactly.
           # full-changed-files.txt remains NUL-delimited for review reconciliation.
           git diff --no-renames --name-only -z "$FULL_BASE_SHA...$HEAD_SHA" > full-changed-files.txt
-          git diff --no-renames --no-ext-diff "$FULL_BASE_SHA...$HEAD_SHA" > full-pr.diff
 
           echo "Classifying the full PR diff:"
           if [[ ! -s full-changed-files.txt ]]; then
@@ -101,8 +93,8 @@ jobs:
         if: steps.changed.outputs.has_changes == 'true'
         id: size
         env:
-          FULL_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FULL_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
         run: |
           set -euo pipefail
 
@@ -127,9 +119,28 @@ jobs:
           set -euo pipefail
           node .risk-tier-policy-gate/scripts/risk-rules.mjs full-changed-files.txt "$RULES_PATH"
 
+      - name: Check LLM availability
+        id: claude
+        if: steps.changed.outputs.has_changes == 'true' && steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true'
+        uses: actions/github-script@v7
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        with:
+          script: |
+            core.setOutput('available', String(Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN)));
+
+      - name: Generate full PR diff for LLM
+        if: steps.claude.outputs.available == 'true'
+        env:
+          FULL_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          git diff --no-renames --no-ext-diff "$FULL_BASE_SHA...$HEAD_SHA" > full-pr.diff
+
       - name: LLM classify full PR (non-forced cases)
         id: llm_classify
-        if: steps.changed.outputs.has_changes == 'true' && steps.rules.outputs.forced_high != 'true' && steps.rules.outputs.all_low_safe != 'true' && steps.size.outputs.large_pr != 'true' && env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        if: steps.claude.outputs.available == 'true'
         continue-on-error: true
         uses: anthropics/claude-code-action@v1
         env:
@@ -144,7 +155,7 @@ jobs:
             Classify the complete current PR diff. Do not limit classification
             to the latest commit or push.
 
-            Full PR range: `${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}`
+            Full PR range: `${{ steps.pr.outputs.base_sha }}...${{ steps.pr.outputs.head_sha }}`
 
             Deterministic pre-check result:
             - tier: `${{ steps.rules.outputs.deterministic_tier }}`
@@ -174,13 +185,29 @@ jobs:
           ALL_LOW_SAFE: ${{ steps.rules.outputs.all_low_safe }}
           LLM_OUTCOME: ${{ steps.llm_classify.outcome }}
           LLM_OUTPUT: ${{ steps.llm_classify.outputs.structured_output }}
+          EVALUATED_BASE: ${{ steps.pr.outputs.base_sha }}
+          EVALUATED_HEAD: ${{ steps.pr.outputs.head_sha }}
         with:
           script: |
             const fs = require('fs');
+            const path = require('path');
+            const { pathToFileURL } = require('url');
+            const { BOT_LOGIN } = await import(pathToFileURL(
+              path.resolve('.risk-tier-policy-gate/scripts/risk-transition.mjs')
+            ).href);
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const issue_number = context.payload.pull_request.number;
             const botLabelPrefix = 'risktier:';
+
+            const { data: livePr } = await github.rest.pulls.get({
+              owner, repo, pull_number: issue_number
+            });
+            if (livePr.head.sha !== process.env.EVALUATED_HEAD || livePr.base.sha !== process.env.EVALUATED_BASE) {
+              core.info(`Skipping stale classification for ${process.env.EVALUATED_BASE}...${process.env.EVALUATED_HEAD}; current range is ${livePr.base.sha}...${livePr.head.sha}`);
+              core.setOutput('stale', 'true');
+              return;
+            }
 
             function sanitizeReason(reason) {
               return String(reason)
@@ -273,7 +300,7 @@ jobs:
             ].join('\n');
 
             const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
-            const existing = comments.find(c => c.body?.includes(marker) && c.user?.login === 'github-actions[bot]');
+            const existing = comments.find(c => c.body?.includes(marker) && c.user?.login === BOT_LOGIN);
             if (existing) {
               await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
             } else {
@@ -291,14 +318,18 @@ jobs:
               throw new Error(`Expected ${targetLabel}, found ${tierLabels[0].name}`);
             }
             core.setOutput('tier', tier);
+            core.setOutput('stale', 'false');
             core.info(`Full PR risk tier: ${tier.toUpperCase()}`);
 
       - name: Reconcile full tier and manage approvals
+        if: steps.full_tier.outputs.stale != 'true' && steps.full_tier.outputs.tier != ''
         uses: actions/github-script@v7
         env:
-          PREVIOUS_LABEL: ${{ steps.prev.outputs.label }}
           FULL_TIER: ${{ steps.full_tier.outputs.tier }}
           RULES_PATH: ${{ steps.resolve.outputs.rules_path }}
+          EVALUATED_BASE: ${{ steps.pr.outputs.base_sha }}
+          EVALUATED_HEAD: ${{ steps.pr.outputs.head_sha }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author }}
         with:
           script: |
             const { execFileSync } = require('child_process');
@@ -309,6 +340,7 @@ jobs:
               path.resolve('.risk-tier-policy-gate/scripts/risk-transition.mjs')
             ).href;
             const {
+              BOT_LOGIN,
               approvalAction,
               effectiveApprovals,
               isApprovalDeltaLowRisk,
@@ -320,11 +352,18 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const pr_number = context.payload.pull_request.number;
-            const previousTier = (process.env.PREVIOUS_LABEL || '').replace('risktier:', '');
             const fullTier = process.env.FULL_TIER;
-            const headSha = context.payload.pull_request.head.sha;
+            const headSha = process.env.EVALUATED_HEAD;
 
-            const action = approvalAction({ previousTier, fullTier });
+            const { data: livePr } = await github.rest.pulls.get({
+              owner, repo, pull_number: pr_number
+            });
+            if (livePr.head.sha !== headSha || livePr.base.sha !== process.env.EVALUATED_BASE) {
+              core.info(`Skipping stale approval reconciliation for ${process.env.EVALUATED_BASE}...${headSha}; current range is ${livePr.base.sha}...${livePr.head.sha}`);
+              return;
+            }
+
+            const action = approvalAction({ fullTier });
             core.info(`Approval action: ${action}; full tier: ${fullTier}`);
 
             if (action === 'ensure-low-approval') {
@@ -332,15 +371,13 @@ jobs:
                 owner, repo, pull_number: pr_number, per_page: 100
               });
               const hasBotApproval = effectiveApprovals(reviews).some(review =>
-                review.user?.login === 'github-actions[bot]'
+                review.user?.login === BOT_LOGIN
               );
               if (!hasBotApproval) {
                 await github.rest.pulls.createReview({
                   owner, repo, pull_number: pr_number,
                   event: 'APPROVE',
-                  body: previousTier === 'high'
-                    ? '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (the full PR was reclassified as low risk).'
-                    : '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (low risk).'
+                  body: '🏰 **PhishFort Risk Tier Profiler** — Auto-approved (the full PR is low risk).'
                 });
                 core.info('Bot auto-approved — full PR is low risk');
               } else {
@@ -390,23 +427,19 @@ jobs:
               owner, repo, pull_number: pr_number, per_page: 100
             });
             const approved = effectiveApprovals(reviews);
-            const toDismiss = approved.filter(review => {
-              const login = review.user?.login;
-              const deltaLowRisk = login === 'github-actions[bot]' || review.commit_id === headSha
-                ? false
-                : approvalDeltaIsLowRisk(review.commit_id);
-              return shouldDismissApproval({
-                reviewerLogin: login,
+            const toDismiss = approved.filter(review =>
+              shouldDismissApproval({
+                reviewerLogin: review.user?.login,
                 reviewCommitId: review.commit_id,
                 headSha,
-                deltaLowRisk,
-              });
-            });
+                deltaLowRisk: () => approvalDeltaIsLowRisk(review.commit_id),
+              })
+            );
 
             const dismissalErrors = [];
             for (const review of toDismiss) {
               const login = review.user?.login;
-              const who = login === 'github-actions[bot]' ? 'bot' : login || 'deleted account';
+              const who = login === BOT_LOGIN ? 'bot' : login || 'deleted account';
               core.info(`Dismissing ${who}'s approval at ${String(review.commit_id).slice(0, 7)} for current HIGH tier`);
               try {
                 await github.rest.pulls.dismissReview({
@@ -434,41 +467,45 @@ jobs:
               owner, repo, pull_number: pr_number, per_page: 100
             });
             const activeApprovals = effectiveApprovals(refreshed);
-            const activeIds = new Set(activeApprovals.map(review => review.id));
-            const survivors = toDismiss.filter(review => activeIds.has(review.id));
-            if (survivors.length > 0) {
-              throw new Error(`Required approvals remain active after dismissal: ${survivors.map(review => review.id).join(', ')}`);
-            }
-            const activeBotApprovals = activeApprovals.filter(
-              review => review.user?.login === 'github-actions[bot]'
+            const invalidApprovals = activeApprovals.filter(review =>
+              shouldDismissApproval({
+                reviewerLogin: review.user?.login,
+                reviewCommitId: review.commit_id,
+                headSha,
+                deltaLowRisk: () => approvalDeltaIsLowRisk(review.commit_id),
+              })
             );
-            if (activeBotApprovals.length > 0) {
-              throw new Error(`Bot approval cannot satisfy a HIGH gate: ${activeBotApprovals.map(review => review.id).join(', ')}`);
-            }
-            const unsafeStaleHumans = activeApprovals.filter(review => {
-              const login = review.user?.login;
-              return login !== 'github-actions[bot]' &&
-                review.commit_id !== headSha &&
-                !approvalDeltaIsLowRisk(review.commit_id);
-            });
-            if (unsafeStaleHumans.length > 0) {
-              throw new Error(`Unsafe stale human approvals remain active: ${unsafeStaleHumans.map(review => review.id).join(', ')}`);
+            if (invalidApprovals.length > 0) {
+              throw new Error(`Approvals that do not satisfy the current HIGH gate remain active: ${invalidApprovals.map(review => review.id).join(', ')}`);
             }
 
-            const prAuthor = context.payload.pull_request.user?.login;
+            const activeHumanApprovals = activeApprovals.filter(review => review.user?.login !== BOT_LOGIN);
+            if (activeHumanApprovals.length > 0) {
+              core.info('A current or deliberately preserved human approval already satisfies the HIGH gate; not requesting reviewers again');
+              return;
+            }
+
+            const prAuthor = process.env.PR_AUTHOR;
             try {
+              const { data: requested } = await github.rest.pulls.listRequestedReviewers({
+                owner, repo, pull_number: pr_number, per_page: 100
+              });
+              const alreadyRequested = new Set((requested.users || []).map(user => user.login));
               const collaborators = await github.paginate(github.rest.repos.listCollaborators, {
                 owner, repo, permission: 'push', per_page: 100
               });
               const reviewers = collaborators
-                .filter(u => u.login !== prAuthor && u.type === 'User')
-                .map(u => u.login);
+                .filter(user => user.login !== prAuthor && user.type === 'User' && !alreadyRequested.has(user.login))
+                .map(user => user.login)
+                .slice(0, Math.max(0, 15 - alreadyRequested.size));
               if (reviewers.length > 0) {
                 await github.rest.pulls.requestReviewers({
                   owner, repo, pull_number: pr_number,
                   reviewers
                 });
                 core.info(`Requested review from: ${reviewers.join(', ')}`);
+              } else if (alreadyRequested.size > 0) {
+                core.info('Eligible reviewers are already requested; not sending duplicate requests');
               } else {
                 core.warning('No eligible reviewers found');
               }

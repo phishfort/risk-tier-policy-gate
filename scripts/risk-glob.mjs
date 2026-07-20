@@ -1,10 +1,22 @@
 export function toRegex(glob) {
-  const escaped = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\//g, '::DOUBLE_STAR_SLASH::')
-    .replace(/\*\*/g, '::DOUBLE_STAR::')
-    .replace(/\*/g, '[^/]*')
-    .replace(/::DOUBLE_STAR_SLASH::/g, '([\\s\\S]*/)?')
-    .replace(/::DOUBLE_STAR::/g, '[\\s\\S]*');
-  return new RegExp(`^${escaped}$`);
+  let source = '^';
+  for (let index = 0; index < glob.length; index += 1) {
+    const char = glob[index];
+    if (char === '*' && glob[index + 1] === '*') {
+      if (glob[index + 2] === '/') {
+        source += '([\\s\\S]*/)?';
+        index += 2;
+      } else {
+        source += '[\\s\\S]*';
+        index += 1;
+      }
+    } else if (char === '*') {
+      source += '[^/]*';
+    } else if (char === '?') {
+      source += '[^/]';
+    } else {
+      source += '\\^$.*+?()[]{}|'.includes(char) ? `\\${char}` : char;
+    }
+  }
+  return new RegExp(`${source}$`);
 }

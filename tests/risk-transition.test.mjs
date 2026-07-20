@@ -14,25 +14,21 @@ import rules from '../config/risk-rules.json' with { type: 'json' };
 
 test('HIGH always reconciles active approvals against current HEAD', () => {
   assert.equal(
-    approvalAction({ previousTier: 'high', fullTier: 'high' }),
-    'reconcile-high-approvals',
-  );
-  assert.equal(
-    approvalAction({ previousTier: 'low', fullTier: 'high' }),
+    approvalAction({ fullTier: 'high' }),
     'reconcile-high-approvals',
   );
 });
 
 test('HIGH -> LOW approves only because the full PR is now low risk', () => {
   assert.equal(
-    approvalAction({ previousTier: 'high', fullTier: 'low' }),
+    approvalAction({ fullTier: 'low' }),
     'ensure-low-approval',
   );
 });
 
 test('LOW always verifies that an active bot approval exists', () => {
   assert.equal(
-    approvalAction({ previousTier: 'low', fullTier: 'low' }),
+    approvalAction({ fullTier: 'low' }),
     'ensure-low-approval',
   );
 });
@@ -152,6 +148,61 @@ test('rename-expanded numstat cannot bypass the insertion size gate', () => {
     }),
     false,
   );
+});
+
+test('binary low-safe assets preserve approval with zero text insertions', () => {
+  const fullFileSet = pathSetFromNul(Buffer.from('assets/logo.png\0'));
+  const result = parseFilteredNumstat(
+    Buffer.from('-\t-\tassets/logo.png\0'),
+    fullFileSet,
+  );
+  assert.deepEqual(result.files.map(file => file.toString()), ['assets/logo.png']);
+  assert.equal(result.insertions, 0);
+  assert.equal(
+    isApprovalDeltaLowRisk({
+      files: result.files.map(file => file.toString()),
+      insertions: result.insertions,
+      rules,
+    }),
+    true,
+  );
+});
+
+test('dismissal policy evaluates the delta lazily after bot and HEAD checks', () => {
+  let calls = 0;
+  const assess = () => {
+    calls += 1;
+    return true;
+  };
+  assert.equal(
+    shouldDismissApproval({
+      reviewerLogin: 'github-actions[bot]',
+      reviewCommitId: 'head',
+      headSha: 'head',
+      deltaLowRisk: assess,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldDismissApproval({
+      reviewerLogin: 'human',
+      reviewCommitId: 'head',
+      headSha: 'head',
+      deltaLowRisk: assess,
+    }),
+    false,
+  );
+  assert.equal(calls, 0);
+  assert.equal(
+    shouldDismissApproval({
+      reviewerLogin: 'human',
+      reviewCommitId: 'old',
+      headSha: 'head',
+      deltaLowRisk: assess,
+    }),
+    false,
+  );
+  assert.equal(calls, 1);
 });
 
 test('current human approvals and stale approvals across proven-safe deltas are preserved', () => {

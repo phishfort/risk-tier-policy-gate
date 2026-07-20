@@ -1,4 +1,7 @@
 import { toRegex } from './risk-glob.mjs';
+import { splitNul } from './nul-records.mjs';
+
+export { pathSetFromNul } from './nul-records.mjs';
 
 const TIERS = new Set(['high', 'low']);
 export const BOT_LOGIN = 'github-actions[bot]';
@@ -10,12 +13,8 @@ function assertTier(tier, name) {
 }
 
 /** Decide the aggregate approval action from the full-PR tier only. */
-export function approvalAction({ previousTier, fullTier }) {
+export function approvalAction({ fullTier }) {
   assertTier(fullTier, 'fullTier');
-  if (previousTier && !TIERS.has(previousTier)) {
-    throw new TypeError(`previousTier must be empty, "high", or "low"; received ${JSON.stringify(previousTier)}`);
-  }
-
   if (fullTier === 'high') return 'reconcile-high-approvals';
   return 'ensure-low-approval';
 }
@@ -64,24 +63,6 @@ export function effectiveApprovals(reviews) {
   return [...latest.values()].filter(review => review.state === 'APPROVED');
 }
 
-function splitNul(buffer) {
-  const records = [];
-  let start = 0;
-  for (let index = 0; index < buffer.length; index += 1) {
-    if (buffer[index] === 0) {
-      if (index > start) records.push(buffer.subarray(start, index));
-      start = index + 1;
-    }
-  }
-  if (start < buffer.length) records.push(buffer.subarray(start));
-  return records;
-}
-
-export function pathSetFromNul(buffer) {
-  if (!Buffer.isBuffer(buffer)) throw new TypeError('path list must be a Buffer');
-  return new Set(splitNul(buffer).map(file => file.toString('hex')));
-}
-
 /** Parse raw `git diff --no-renames --numstat -z` output and filter it to the current PR. */
 export function parseFilteredNumstat(numstat, fullFileSet) {
   if (!Buffer.isBuffer(numstat) || !(fullFileSet instanceof Set)) {
@@ -97,8 +78,12 @@ export function parseFilteredNumstat(numstat, fullFileSet) {
     const file = record.subarray(secondTab + 1);
     if (!fullFileSet.has(file.toString('hex'))) continue;
     const added = record.subarray(0, firstTab).toString('ascii');
-    if (!/^\d+$/.test(added)) throw new Error('Binary or invalid insertion count');
-    insertions += Number(added);
+    const deleted = record.subarray(firstTab + 1, secondTab).toString('ascii');
+    if (/^\d+$/.test(added) && /^\d+$/.test(deleted)) {
+      insertions += Number(added);
+    } else if (added !== '-' || deleted !== '-') {
+      throw new Error('Invalid git numstat record');
+    }
     files.push(file);
   }
   return { files, insertions };
@@ -108,5 +93,6 @@ export function parseFilteredNumstat(numstat, fullFileSet) {
 export function shouldDismissApproval({ reviewerLogin, reviewCommitId, headSha, deltaLowRisk }) {
   if (reviewerLogin === BOT_LOGIN) return true;
   if (reviewCommitId === headSha) return false;
-  return deltaLowRisk !== true;
+  const isLowRisk = typeof deltaLowRisk === 'function' ? deltaLowRisk() : deltaLowRisk;
+  return isLowRisk !== true;
 }
