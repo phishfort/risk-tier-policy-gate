@@ -1,0 +1,139 @@
+name: "✅ Code Standards Review Gate"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  standards-gate:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate standards (coverage + docker test env)
+        id: eval
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HAS_DOCKER=false
+          if [[ -f "Dockerfile" || -f "docker-compose.yml" || -f "docker-compose.yaml" || -f "compose.yml" || -f "compose.yaml" || -f "Dockerfile.test" || -f ".devcontainer/devcontainer.json" ]]; then
+            HAS_DOCKER=true
+          fi
+
+          COVERAGE_FOUND=false
+          COVERAGE_PCT=""
+
+          if [[ -f "coverage-summary.json" ]]; then
+            COVERAGE_PCT=$(node -e "const fs=require('fs');const x=JSON.parse(fs.readFileSync('coverage-summary.json','utf8'));console.log((x.total&&x.total.lines&&x.total.lines.pct)||'');")
+            COVERAGE_FOUND=true
+          elif [[ -f "coverage/coverage-summary.json" ]]; then
+            COVERAGE_PCT=$(node -e "const fs=require('fs');const x=JSON.parse(fs.readFileSync('coverage/coverage-summary.json','utf8'));console.log((x.total&&x.total.lines&&x.total.lines.pct)||'');")
+            COVERAGE_FOUND=true
+          elif [[ -f "coverage/cobertura-coverage.xml" ]]; then
+            RATE=$(grep -oE 'line-rate="[0-9]+\.?[0-9]*"' coverage/cobertura-coverage.xml | head -n1 | sed -E 's/.*"([0-9.]+)"/\1/')
+            if [[ -n "$RATE" ]]; then
+              COVERAGE_PCT=$(awk -v r="$RATE" 'BEGIN{printf "%.2f", r*100}')
+              COVERAGE_FOUND=true
+            fi
+          elif [[ -f "coverage/lcov.info" ]]; then
+            LF=$(grep '^LF:' coverage/lcov.info | awk -F: '{s+=$2} END{print s+0}')
+            LH=$(grep '^LH:' coverage/lcov.info | awk -F: '{s+=$2} END{print s+0}')
+            if [[ "$LF" -gt 0 ]]; then
+              COVERAGE_PCT=$(awk -v lh="$LH" -v lf="$LF" 'BEGIN{printf "%.2f", (lh/lf)*100}')
+              COVERAGE_FOUND=true
+            fi
+          fi
+
+          COVERAGE_BELOW_95=false
+          if [[ "$COVERAGE_FOUND" == "true" ]]; then
+            COVERAGE_BELOW_95=$(awk -v c="$COVERAGE_PCT" 'BEGIN{ if (c+0 < 95) print "true"; else print "false" }')
+          fi
+
+          REQUIRES_HUMAN_REVIEW=false
+          if [[ "$COVERAGE_BELOW_95" == "true" && "$HAS_DOCKER" == "false" ]]; then
+            REQUIRES_HUMAN_REVIEW=true
+          fi
+
+          echo "has_docker=$HAS_DOCKER" >> "$GITHUB_OUTPUT"
+          echo "coverage_found=$COVERAGE_FOUND" >> "$GITHUB_OUTPUT"
+          echo "coverage_pct=$COVERAGE_PCT" >> "$GITHUB_OUTPUT"
+          echo "coverage_below_95=$COVERAGE_BELOW_95" >> "$GITHUB_OUTPUT"
+          echo "requires_human_review=$REQUIRES_HUMAN_REVIEW" >> "$GITHUB_OUTPUT"
+
+      - name: Upsert standards comment and request review when needed
+        uses: actions/github-script@v7
+        env:
+          HAS_DOCKER: ${{ steps.eval.outputs.has_docker }}
+          COVERAGE_FOUND: ${{ steps.eval.outputs.coverage_found }}
+          COVERAGE_PCT: ${{ steps.eval.outputs.coverage_pct }}
+          COVERAGE_BELOW_95: ${{ steps.eval.outputs.coverage_below_95 }}
+          REQUIRES_HUMAN_REVIEW: ${{ steps.eval.outputs.requires_human_review }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+            const prAuthor = context.payload.pull_request.user.login;
+
+            const hasDocker = process.env.HAS_DOCKER === 'true';
+            const coverageFound = process.env.COVERAGE_FOUND === 'true';
+            const coveragePct = process.env.COVERAGE_PCT || 'n/a';
+            const coverageBelow95 = process.env.COVERAGE_BELOW_95 === 'true';
+            const requiresHumanReview = process.env.REQUIRES_HUMAN_REVIEW === 'true';
+
+            const marker = '<!-- code-standards-review-gate -->';
+            const body = [
+              marker,
+              '✅ **Code Standards Review Gate**',
+              '',
+              `- Coverage data found: ${coverageFound ? 'yes' : 'no'}`,
+              `- Coverage (%): ${coveragePct}`,
+              `- Coverage below 95%: ${coverageBelow95 ? 'yes' : 'no'}`,
+              `- Docker test environment defined: ${hasDocker ? 'yes' : 'no'}`,
+              '',
+              requiresHumanReview
+                ? 'Result: **HUMAN REVIEW REQUIRED** (coverage <95% and no Docker test environment).'
+                : 'Result: **PASS** (no additional human-review enforcement triggered by this gate).'
+            ].join('\n');
+
+            const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number: prNumber });
+            const existing = comments.find(c => c.body.includes(marker) && c.user.login === 'github-actions[bot]');
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+            }
+
+            if (requiresHumanReview) {
+              try {
+                const { data: collaborators } = await github.rest.repos.listCollaborators({ owner, repo, permission: 'push' });
+                const reviewers = collaborators
+                  .filter(u => u.login !== prAuthor && u.type === 'User')
+                  .map(u => u.login);
+                if (reviewers.length > 0) {
+                  await github.rest.pulls.requestReviewers({ owner, repo, pull_number: prNumber, reviewers });
+                  core.info(`Requested review from: ${reviewers.join(', ')}`);
+                } else {
+                  core.warning('No eligible reviewers found for standards gate');
+                }
+              } catch (err) {
+                core.warning(`Failed to request reviewers (${err.status}): ${err.message}`);
+              }
+            }
+
+      - name: Enforce gate (fail when human review required)
+        if: steps.eval.outputs.requires_human_review == 'true'
+        run: |
+          echo "Code standards gate triggered: coverage <95% and no Docker test environment."
+          exit 1
