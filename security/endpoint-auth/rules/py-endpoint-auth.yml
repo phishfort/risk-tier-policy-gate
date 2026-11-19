@@ -1,0 +1,73 @@
+# Endpoint auth gate — Python rules. See js-endpoint-auth.yml for conventions.
+# Suppress a reviewed false positive inline with:  # nosemgrep: <rule-id> -- <reason>
+
+rules:
+  - id: py-access-identity-header-trusted
+    languages: [python]
+    severity: WARNING
+    message: >-
+      Identity is read from the `$H` request header. It is only trustworthy if every
+      request passes through the identity proxy AND the proxy's JWT
+      (`Cf-Access-Jwt-Assertion`) is verified in code. Otherwise anyone who reaches the
+      service directly can claim to be any user. Verify the JWT (e.g. PyJWT with the
+      Access team JWKS + audience) and read the email from its claims.
+    metadata:
+      gate: high
+      category: spoofable-auth
+      suppress_if_file_matches: '(?i)(jwt\.decode\([^)]*(audience|key)|PyJWKClient|verify_access_jwt|verify_cf_access)'
+    patterns:
+      - pattern-either:
+          - pattern: $R.headers.get("$H", ...)
+          - pattern: $R.headers["$H"]
+          - pattern: $R.META.get("$H", ...)
+          - pattern: $R.META["$H"]
+      - metavariable-regex:
+          metavariable: $H
+          regex: (?i)^(http_)?(cf[-_]access[-_]authenticated[-_]user[-_]email|x[-_]goog[-_]authenticated[-_]user[-_]email|x[-_]forwarded[-_](email|user)|x[-_]auth[-_]request[-_]email|x[-_]user[-_]email)$
+
+  - id: py-auth-fails-open-when-secret-unset
+    languages: [python]
+    severity: ERROR
+    message: >-
+      Auth is skipped when `$K` is empty or unset, so a missing secret silently makes
+      the endpoint public. Fail closed when the secret is not configured.
+    metadata:
+      gate: high
+      category: fail-open
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if $K and $X != $K:
+                  ...
+          - pattern: |
+              if $K and not $CMP($X, $K):
+                  ...
+      # $K must look like a configured secret (UPPER_CASE constant or settings attr).
+      - metavariable-regex:
+          metavariable: $K
+          regex: '^(?:(?:self|settings|config|cfg)\.)?[A-Z][A-Z0-9_]*$'
+      - metavariable-regex:
+          metavariable: $K
+          regex: '^(?!.*(?:_FILE|_PATH|_DIR|_ID|_IDS|_NAME|_URL|_URI|_ENV|_HEADER|_LABEL|_TTL|_PREFIX)$).*?(?<![A-Z])(API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD)S?(?![A-Z]).*$'
+
+  - id: py-hardcoded-secret-fallback
+    languages: [python]
+    severity: ERROR
+    message: >-
+      `$K` falls back to a hardcoded literal when the env var is unset. Remove the
+      fallback, fail closed, and rotate the literal if it was ever used.
+    metadata:
+      gate: high
+      category: hardcoded-credential
+    patterns:
+      - pattern-either:
+          - pattern: os.environ.get("$K", "$LIT")
+          - pattern: os.getenv("$K", "$LIT")
+          - pattern: os.environ.get("$K") or "$LIT"
+          - pattern: os.getenv("$K") or "$LIT"
+      - metavariable-regex:
+          metavariable: $K
+          regex: '^(?!.*(?:_FILE|_PATH|_DIR|_ID|_IDS|_NAME|_URL|_URI|_ENV|_HEADER|_LABEL|_TTL|_PREFIX)$).*?(?i:(?<![a-z])(api_?key|key|token|secret|password|passwd)s?(?![a-z])).*$'
+      - metavariable-regex:
+          metavariable: $LIT
+          regex: '^(?![./~])(?!.*\.(?:json|txt|db|sqlite|pem|key|ya?ml|toml|log)$)(?=.*[A-Za-z])(?:(?=.*[0-9])|(?=.*[a-z])(?=.*[A-Z]))[A-Za-z0-9_\-+/=.]{16,}$'

@@ -1,0 +1,33 @@
+name: Endpoint auth gate tests
+
+on:
+  pull_request:
+    paths:
+      - 'security/endpoint-auth/**'
+      - 'scripts/endpoint-auth-*'
+      - '.github/workflows/endpoint-auth-tests.yml'
+      - '.github/workflows/endpoint-auth-required.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'security/endpoint-auth/**'
+      - 'scripts/endpoint-auth-*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install semgrep (same pin as the gate)
+        run: pipx install semgrep==1.186.0
+
+      - name: Rule unit tests (ruleid / ok annotations)
+        run: semgrep --metrics=off --test security/endpoint-auth/rules
+
+      - name: "End-to-end (scan -> report: check run, comment, label)"
+        run: security/endpoint-auth/tests/e2e.sh
