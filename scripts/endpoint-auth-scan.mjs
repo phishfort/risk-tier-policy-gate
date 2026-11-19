@@ -46,7 +46,10 @@ const IGNORED_PATH =
 const CODE_EXT = /\.(m?[jt]sx?|cjs|cts|mts|py|go)$/i;
 
 const existing = fullFiles.filter((f) => fs.existsSync(f) && fs.statSync(f).isFile());
-const codeFiles = existing.filter((f) => CODE_EXT.test(f) && !IGNORED_PATH.test(f));
+// Semgrep rule-test fixtures (`// ruleid:` / `# ruleid:` annotations) are deliberately
+// vulnerable code — never report them.
+const isRuleFixture = (f) => /^\s*(\/\/|#)\s*ruleid:/m.test(fs.readFileSync(f, 'utf8'));
+const codeFiles = existing.filter((f) => CODE_EXT.test(f) && !IGNORED_PATH.test(f) && !isRuleFixture(f));
 
 // ---------------------------------------------------------------- added lines per file
 // Diff base -> WORKING TREE (the checked-out PR head). Pass the merge-base as `base` so
@@ -191,6 +194,9 @@ for (const file of existing) {
     }
   }
 
+  // Only deploy definitions — not docs or code that merely mention the flag.
+  const DEPLOY_FILE = /(^|\/)(\.github\/workflows\/[^/]+\.ya?ml|[^/]+\.(sh|bash|tf|tfvars)|Makefile|cloudbuild[^/]*\.ya?ml|[^/]*deploy[^/]*\.ya?ml)$/i;
+  if (!DEPLOY_FILE.test(file)) continue;
   const addedText = a.text.join('\n');
   if (/--allow-unauthenticated\b/.test(addedText) || /allUsers[\s\S]{0,200}(run|cloudfunctions)\.invoker|(run|cloudfunctions)\.invoker[\s\S]{0,200}allUsers/.test(addedText)) {
     findings.push({
