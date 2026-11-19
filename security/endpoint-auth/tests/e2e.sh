@@ -133,4 +133,16 @@ if (o.final.conclusion !== "success") throw new Error("expected success, got " +
 if (o.calls.includes("createComment") || o.calls.includes("addLabels")) throw new Error("should stay quiet: " + o.calls);
 ' "$OUT4" || fail "clean PR"
 
+# ---- a `// ruleid:` comment alone must not hide code (only real fixtures next to a rule .yml)
+git checkout -q -b evade main && cat > src/evade.ts <<'TS'
+// ruleid: nothing-to-see
+export function who(request: Request) {
+  return request.headers.get("Cf-Access-Authenticated-User-Email");
+}
+TS
+git add . && git commit -qm evade
+MB3=$(git merge-base main HEAD); git diff --name-only "$MB3" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
+MB="$MB3" scan
+node -e 'const r=require(process.argv[1]+"/endpoint-auth-result.json"); if(!r.findings.some(f=>f.file==="src/evade.ts")) throw new Error("ruleid comment hid a finding")' "$RUN" || fail "fixture-skip bypass"
+
 echo "endpoint-auth e2e: OK"

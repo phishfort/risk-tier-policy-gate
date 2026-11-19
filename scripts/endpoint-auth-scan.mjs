@@ -46,9 +46,14 @@ const IGNORED_PATH =
 const CODE_EXT = /\.(m?[jt]sx?|cjs|cts|mts|py|go)$/i;
 
 const existing = fullFiles.filter((f) => fs.existsSync(f) && fs.statSync(f).isFile());
-// Semgrep rule-test fixtures (`// ruleid:` / `# ruleid:` annotations) are deliberately
-// vulnerable code — never report them.
-const isRuleFixture = (f) => /^\s*(\/\/|#)\s*ruleid:/m.test(fs.readFileSync(f, 'utf8'));
+// Semgrep rule-test fixtures are deliberately vulnerable code — never report them. Only the
+// real semgrep convention counts (a sibling `<same-basename>.yml|.yaml` rule file AND
+// `ruleid:` annotations), so adding a `// ruleid:` comment alone cannot hide code.
+const isRuleFixture = (f) => {
+  const base = f.replace(/\.[^./]+$/, '');
+  const hasRuleFile = fs.existsSync(`${base}.yml`) || fs.existsSync(`${base}.yaml`);
+  return hasRuleFile && /^\s*(\/\/|#)\s*ruleid:/m.test(fs.readFileSync(f, 'utf8'));
+};
 const codeFiles = existing.filter((f) => CODE_EXT.test(f) && !IGNORED_PATH.test(f) && !isRuleFixture(f));
 
 // ---------------------------------------------------------------- added lines per file
