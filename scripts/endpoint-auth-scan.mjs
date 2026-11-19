@@ -235,6 +235,11 @@ const ROUTE_LINE = [
   /\bhttp\.HandleFunc\s*\(|\.(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc)\s*\(\s*"\//,
   /\b(server|mcp|agent)\.(tool|registerTool|resource|prompt)\s*\(/,
   /\bnew\s+Hono\s*\(|\bexpress\s*\(\s*\)|\bRouter\s*\(\s*\)|\bFastAPI\s*\(|\bAPIRouter\s*\(|\bFlask\s*\(/,
+  // Route tables: ['GET', /^\/v1\/x$/, handler, { public: true }] / ['POST', '/v1/x', handler]
+  /\[\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL|ANY|\*)['"`]\s*,\s*(\/|['"`]\/)/i,
+  // Route objects: { method: 'GET', path: '/x' } / { path: '/x', method: 'GET' }
+  /\bmethods?\s*:\s*\[?\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL)['"`][^}]*\b(path|url|route|pattern)\s*:/i,
+  /\b(path|url|route|pattern)\s*:\s*['"`]\/[^'"`]*['"`]\s*,[^}]*\bmethods?\s*:/i,
 ];
 const ROUTE_PATH = /(^|\/)(pages\/api\/|app\/(.*\/)?route\.[cm]?[jt]sx?$)/;
 const routeFilesFull = [];

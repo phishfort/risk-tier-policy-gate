@@ -63,6 +63,7 @@ git commit -qam "base moves" && BASE_SHA=$(git rev-parse HEAD)
 git checkout -q --detach "$HEAD_SHA"
 MB=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
 ln -s "$ROOT" .endpoint-auth-gate-src && RUN="$TMP/run" && mkdir -p "$RUN"
+printf 'run/\n.endpoint-auth-gate-src\n' >> .git/info/exclude # gate scratch, never part of the PR
 git diff --name-only "$MB" "$HEAD_SHA" > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
 
 scan() {
@@ -144,5 +145,20 @@ git add . && git commit -qm evade
 MB3=$(git merge-base main HEAD); git diff --name-only "$MB3" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
 MB="$MB3" scan
 node -e 'const r=require(process.argv[1]+"/endpoint-auth-result.json"); if(!r.findings.some(f=>f.file==="src/evade.ts")) throw new Error("ruleid comment hid a finding")' "$RUN" || fail "fixture-skip bypass"
+
+# ---- route tables count as route changes (AI review triggers); outbound fetch() calls do not
+git checkout -q -b table main && mkdir -p src/api && cat > src/api/routes.js <<'JS'
+export const routes = [
+  ['GET', /^\/v1\/things$/, listThings],
+  ['POST', /^\/v1\/things\/([^/]+)\/share$/, shareThing, { public: true }],
+];
+JS
+cat > src/api/client.js <<'JS'
+export const load = (url) => fetch(url, { method: "GET", headers: {} });
+JS
+git add . && git commit -qm table
+MB4=$(git merge-base main HEAD); git diff --name-only "$MB4" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
+MB="$MB4" scan
+node -e 'const r=require(process.argv[1]+"/endpoint-auth-result.json"); if(JSON.stringify(r.route_files_full)!=="[\"src/api/routes.js\"]") throw new Error("route table detection: "+r.route_files_full)' "$RUN" || fail "route table"
 
 echo "endpoint-auth e2e: OK"
