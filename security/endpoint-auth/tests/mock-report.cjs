@@ -46,8 +46,22 @@ const github = {
 };
 const context = { sha: 'mergecommit', repo: { owner: 'acme', repo: 'demo' }, payload: { pull_request: { number: 1, head: { sha: 'headsha' } } } };
 const outputs = {};
-const core = { setOutput: (k, v) => (outputs[k] = v), info: () => {}, warning: () => {} };
+let summary = '';
+const core = {
+  setOutput: (k, v) => (outputs[k] = v),
+  info: () => {},
+  warning: () => {},
+  summary: {
+    addRaw(text) {
+      summary += text;
+      return this;
+    },
+    async write() {
+      return this;
+    },
+  },
+};
 (async () => {
   const final = await report({ github, context, core, workDir, llmExecutionFile: exec, llmRan: exec !== 'none', scanOutcome: 'success' });
-  console.log(JSON.stringify({ final, outputs, calls, body: comments[0]?.body ?? '', check }));
+  console.log(JSON.stringify({ final, outputs, calls, body: comments[0]?.body ?? '', check, summary }));
 })();

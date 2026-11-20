@@ -13,6 +13,14 @@ Count anything reachable over the network that runs code on request:
 - Pages Functions
 - MCP tools and resources
 - Webhook receivers
+- Entries in a route table (`['GET', /^\/v1\/things$/, handler, { public: true }]`). Follow the dispatcher to see which auth runs for each entry, and how options such as `public` change it.
+
+## Shared auth code and permission tables
+
+`auth_files` in the rule-scanner output lists changed files where auth decisions live: middleware, token/session checks, permission or policy tables (for example `policy.json`). A change there can widen access to **existing** endpoints without touching a route. When `auth_files` is non-empty:
+- Check whether the change removes or weakens a check, grants a route to a broader role/team, or adds a bypass (public flag, allowlisted path, skipped method).
+- Report each endpoint that loses protection, using the changed line in the auth file as `file:line` when there is no single handler.
+- A change that keeps or tightens protection needs no entry.
 
 ## Auth levels
 

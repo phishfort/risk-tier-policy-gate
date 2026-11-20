@@ -103,6 +103,8 @@ if (o.check.name !== "Endpoint auth findings" || o.check.head_sha !== "headsha")
 const failures = o.check.annotations.filter(a => a.annotation_level === "failure").map(a => a.path + ":" + a.start_line).sort().join(",");
 if (failures !== "src/server.ts:14,src/server.ts:5,src/server.ts:6") throw new Error("annotations " + failures);
 if (!o.body.includes("endpoint-auth-gate") || !o.body.includes("does not block merging")) throw new Error("comment text");
+// Job summary lists every AI-assessed endpoint and the files in scope.
+if (!o.summary.includes("/v1/files") || !o.summary.includes("`weak`") || !o.summary.includes("`src/server.ts`")) throw new Error("job summary: " + o.summary);
 ' "$OUT" || fail "report"
 
 # ---- carry-forward: AI skipped on a later push -> previous AI findings kept from the comment
@@ -160,5 +162,48 @@ git add . && git commit -qm table
 MB4=$(git merge-base main HEAD); git diff --name-only "$MB4" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
 MB="$MB4" scan
 node -e 'const r=require(process.argv[1]+"/endpoint-auth-result.json"); if(JSON.stringify(r.route_files_full)!=="[\"src/api/routes.js\"]") throw new Error("route table detection: "+r.route_files_full)' "$RUN" || fail "route table"
+
+# ---- formatter-wrapped route-table entries (bracket, method and pattern on separate lines)
+git checkout -q -b wrapped main && mkdir -p src/api && cat > src/api/routes.js <<'JS'
+export const routes = [
+  [
+    'GET',
+    /^\/v1\/clients\/([^/]+)\/things\/([^/]+)\/attachments\/([^/]+)$/,
+    getAttachment,
+  ],
+];
+JS
+git add . && git commit -qm wrapped
+MB5=$(git merge-base main HEAD); git diff --name-only "$MB5" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
+MB="$MB5" scan
+node -e 'const r=require(process.argv[1]+"/endpoint-auth-result.json"); if(JSON.stringify(r.route_files_full)!=="[\"src/api/routes.js\"]") throw new Error("wrapped route table: "+r.route_files_full)' "$RUN" || fail "wrapped route table"
+
+# ---- shared auth code / permission tables: any change (even deletion-only) is in scope
+git checkout -q -b authbase main && mkdir -p src/lib && cat > src/lib/auth.ts <<'TS'
+export function requireUser(request: Request, env: any): boolean {
+  const key = request.headers.get("x-api-key");
+  if (!key) return false;
+  return key === env.ADMIN_API_KEY;
+}
+TS
+printf '{ "admin": ["DELETE /v1/things/:id"] }\n' > src/policy.json
+echo 'export const authors = ["a"];' > src/authors.ts
+git add . && git commit -qm authbase
+git checkout -q -b authpr && sed -i.bak '/if (!key) return false;/d' src/lib/auth.ts && rm -f src/lib/auth.ts.bak
+printf '{ "admin": ["DELETE /v1/things/:id"], "viewer": ["DELETE /v1/things/:id"] }\n' > src/policy.json
+echo 'export const authors = ["a", "b"];' > src/authors.ts
+git commit -qam authpr
+MB6=$(git merge-base authbase HEAD); git diff --name-only "$MB6" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
+MB="$MB6" scan
+node -e '
+const fs = require("fs");
+const r = require(process.argv[1] + "/endpoint-auth-result.json");
+const want = "[\"src/lib/auth.ts\",\"src/policy.json\"]";
+if (JSON.stringify([...r.auth_files].sort()) !== want) throw new Error("auth_files: " + r.auth_files);
+if (JSON.stringify([...r.route_files_full].sort()) !== want) throw new Error("route_files_full: " + r.route_files_full);
+if (JSON.stringify([...r.route_files_increment].sort()) !== want) throw new Error("route_files_increment: " + r.route_files_increment);
+const diff = fs.readFileSync(process.argv[1] + "/endpoint-auth-diff.patch", "utf8");
+if (!diff.includes("-  if (!key) return false;") || !diff.includes("viewer")) throw new Error("auth diff missing for the AI reviewer");
+' "$RUN" || fail "auth files"
 
 echo "endpoint-auth e2e: OK"

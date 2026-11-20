@@ -17,12 +17,13 @@ It is independent of the Risk Tier Profiler: it doesn't change `risktier:*` labe
 | Layer | When | What |
 |---|---|---|
 | **Rules** (semgrep, [`rules/`](rules/)) | Every PR, on lines the PR adds or changes | Known anti-patterns:<br>- spoofable identity headers<br>- presence-only JWT checks<br>- auth that turns off when a secret is unset<br>- hardcoded fallback keys<br>- HTTP Cloud Functions with no credential check<br><br>Also informational notes: Worker reachable on `*.workers.dev`, public Cloud Run invoker. |
-| **AI endpoint review** (Claude, read-only tools) | Only when the latest push touches route or handler code | For each added or changed endpoint, judges which auth runs before data is touched, using [`review-guide.md`](review-guide.md). It catches what patterns can't, such as a new route with no auth check at all, or a tenant id taken from the request. Advisory. |
+| **AI endpoint review** (Claude, read-only tools) | Only when the latest push touches route or handler code (including route-table entries), or shared auth code / permission tables (file names with auth, middleware, session, guard, permission, policy, rbac, acl) | For each added or changed endpoint, judges which auth runs before data is touched, using [`review-guide.md`](review-guide.md). It catches what patterns can't, such as a new route with no auth check at all, or a tenant id taken from the request. Advisory. |
 
 **How the diff is evaluated:**
 - Rules always evaluate the **full PR diff**, measured from the merge-base to the PR head, so unresolved findings keep the check red on later pushes.
 - Line numbers match the PR head, so annotations and links point at the right lines.
-- The AI review re-runs only when a push touches route or handler files. Otherwise its previous findings are carried over from the comment.
+- The AI review re-runs only when a push touches route, handler or auth/permission files. Otherwise its previous findings are carried over from the comment.
+- Every endpoint the AI assessed (including `ok` ones) and the files in scope are listed on the workflow run's **job summary** page, so a green result shows what it covered.
 
 ## Check-run states
 
@@ -72,4 +73,5 @@ If the gate itself breaks (for example, the report step errors), the workflow lo
 - Only PRs to enrolled repos are checked. Direct pushes, and deploys from a laptop (`wrangler deploy`, `gcloud … deploy`), bypass GitHub entirely.
 - The rules cover JS/TS and Python. Other languages rely on the AI review.
 - Whether a service is *actually* reachable (Access policies, IAM invokers) is deploy-time config the gate can't see. Reviewers should check.
-- A fix made outside route files (for example in shared middleware) leaves the previous AI findings showing until the next route change. The reviewer can merge over them.
+- A fix made outside route and auth/permission files (for example in a shared helper) leaves the previous AI findings showing until the next route change. The reviewer can merge over them.
+- Auth/permission files are recognised by file name only. Auth logic in a file named otherwise (for example `index.js`) relies on the rules, or on a route change in the same push.

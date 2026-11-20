@@ -294,6 +294,34 @@ module.exports = async function report({ github, context, core, workDir = '.', l
   if (securityHigh && !hasLabel) await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL] });
   else if (!securityHigh && hasLabel) await github.rest.issues.removeLabel({ owner, repo, issue_number, name: LABEL }).catch(() => {});
 
+  // ---- job summary (run page only, no PR noise): what was in scope and every endpoint the AI
+  // assessed, including `ok` ones, so reviewers can see what a green result covered.
+  if (core.summary) {
+    try {
+      const inScope = det?.route_files_full ?? [];
+      const authSet = new Set(det?.auth_files ?? []);
+      const s = [`### 🔐 Endpoint auth check — ${headline}`, ''];
+      s.push(`Rules: ${detHigh.length} high, ${detInfo.length} info, ${detSuppressed.length} suppressed · AI review: \`${final.llm_status}\``, '');
+      if (inScope.length) {
+        s.push(`**Route / auth files in scope (${inScope.length}):**`, '');
+        for (const f of inScope.slice(0, 40)) s.push(`- \`${f}\`${authSet.has(f) ? ' (auth/permission)' : ''}`);
+        if (inScope.length > 40) s.push(`- … ${inScope.length - 40} more`);
+        s.push('');
+      }
+      if (llmFindings.length) {
+        s.push(`**AI-assessed endpoints (${llmFindings.length}):**`, '', '| Where | Endpoint | Auth | Sensitive | Confidence | Note |', '|---|---|---|---|---|---|');
+        for (const e of llmFindings.slice(0, 100))
+          s.push(
+            `| ${link(e.file, e.line)} | ${cell(`${e.method} ${e.route}`.trim() || '—')} | \`${e.auth}\` | ${e.sensitive ? 'yes' : 'no'} | ${e.confidence} | ${cell(e.issue) || '—'} |`,
+          );
+        if (llmFindings.length > 100) s.push('', `… ${llmFindings.length - 100} more (see endpoint-auth-final.json)`);
+      } else if (llmStatus === 'ran') s.push('The AI review found no added or changed endpoints.');
+      await core.summary.addRaw(s.join('\n'), true).write();
+    } catch (e) {
+      core.warning(`Could not write the job summary: ${e.message}`);
+    }
+  }
+
   core.info(
     `Endpoint auth: conclusion=${conclusion} (rules high=${detHigh.length}, info=${detInfo.length}, suppressed=${detSuppressed.length}; ai high=${llmHigh.length}, status=${final.llm_status})`,
   );

@@ -221,6 +221,9 @@ for (const file of existing) {
 }
 
 // ---------------------------------------------------------------- route-touching detection
+// Route tables: ['GET', /^\/v1\/x$/, handler, { public: true }] / ['POST', '/v1/x', handler].
+// Also tested on the joined added lines, so formatter-wrapped entries ([\n 'GET',\n /^...$/,) match.
+const ROUTE_TABLE = /\[\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL|ANY|\*)['"`]\s*,\s*(\/|['"`]\/)/i;
 const ROUTE_LINE = [
   /\basync\s+fetch\s*\(\s*(request|req)\b/,
   /\bfetch\s*:\s*(async\s*)?\(\s*(request|req)\b/,
@@ -235,8 +238,7 @@ const ROUTE_LINE = [
   /\bhttp\.HandleFunc\s*\(|\.(GET|POST|PUT|PATCH|DELETE|Handle|HandleFunc)\s*\(\s*"\//,
   /\b(server|mcp|agent)\.(tool|registerTool|resource|prompt)\s*\(/,
   /\bnew\s+Hono\s*\(|\bexpress\s*\(\s*\)|\bRouter\s*\(\s*\)|\bFastAPI\s*\(|\bAPIRouter\s*\(|\bFlask\s*\(/,
-  // Route tables: ['GET', /^\/v1\/x$/, handler, { public: true }] / ['POST', '/v1/x', handler]
-  /\[\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL|ANY|\*)['"`]\s*,\s*(\/|['"`]\/)/i,
+  ROUTE_TABLE,
   // Route objects: { method: 'GET', path: '/x' } / { path: '/x', method: 'GET' }
   /\bmethods?\s*:\s*\[?\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL)['"`][^}]*\b(path|url|route|pattern)\s*:/i,
   /\b(path|url|route|pattern)\s*:\s*['"`]\/[^'"`]*['"`]\s*,[^}]*\bmethods?\s*:/i,
@@ -246,8 +248,25 @@ const routeFilesFull = [];
 for (const file of codeFiles) {
   const a = added.get(file);
   if (!a || a.text.length === 0) continue;
-  if (ROUTE_PATH.test(file) || a.text.some((l) => ROUTE_LINE.some((re) => re.test(l)))) routeFilesFull.push(file);
+  if (ROUTE_PATH.test(file) || a.text.some((l) => ROUTE_LINE.some((re) => re.test(l))) || ROUTE_TABLE.test(a.text.join('\n')))
+    routeFilesFull.push(file);
 }
+
+// Shared auth code (middleware, session/token checks) and permission tables can widen access
+// without touching a route. ANY change to them (additions, deletions, removal of the file)
+// triggers the AI review, and they go into its diff.
+const AUTH_FILE =
+  /(^|[/_.-])(auth|authn|authz|authori[sz]ation|authenticat\w*|oauth\w*|middlewares?|sessions?|guards?|permissions?|polic(y|ies)|rbac|acls?|access[-_]control)([/_.-]|$)/i;
+const AUTH_CONFIG_EXT = /\.(json|ya?ml|toml)$/i;
+const authFiles = fullFiles.filter(
+  (f) =>
+    AUTH_FILE.test(f) &&
+    (CODE_EXT.test(f) || AUTH_CONFIG_EXT.test(f)) &&
+    !IGNORED_PATH.test(f) &&
+    !f.startsWith('.github/') &&
+    !(fs.existsSync(f) && isRuleFixture(f)),
+);
+for (const f of authFiles) if (!routeFilesFull.includes(f)) routeFilesFull.push(f);
 const routeFilesIncrement = routeFilesFull.filter((f) => changedFiles.has(f));
 
 // Diff of route files for the LLM reviewer (it gets no shell access).
@@ -274,6 +293,7 @@ const result = {
   high_count: highCount,
   route_files_full: routeFilesFull,
   route_files_increment: routeFilesIncrement,
+  auth_files: authFiles,
 };
 fs.writeFileSync(args.out, JSON.stringify(result, null, 2));
 
@@ -287,7 +307,7 @@ if (ghOut) {
 }
 console.log(
   `endpoint-auth scan: ${codeFiles.length} code files, ${findings.length} findings (${highCount} high), ` +
-    `${routeFilesFull.length} route files (${routeFilesIncrement.length} in this push)` +
+    `${routeFilesFull.length} route files (${routeFilesIncrement.length} in this push; ${authFiles.length} auth/permission)` +
     (scannerError ? ` — SCANNER ERROR: ${scannerError}` : ''),
 );
 for (const f of findings) console.log(`  [${f.gate}] ${f.rule} ${f.file}:${f.line}`);

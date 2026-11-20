@@ -50,7 +50,8 @@ security/endpoint-auth/    ← its rules, fixtures, AI review guide, e2e test
 - The scan diffs **merge-base → working tree**, so line numbers match the PR head. That is required for annotations.
 
 **AI step (`claude-code-action`):**
-- Runs only when this push touches route or handler files.
+- Runs only when this push touches route/handler files (incl. route-table entries, even formatter-wrapped) or shared auth code / permission tables (`auth_files`: auth, middleware, session, guard, permission, policy, rbac, acl).
+- The report writes every AI-assessed endpoint (incl. `ok`) to the run's job summary, so a green result is auditable without PR comments.
 - Tools are read-only (`Read,Glob,Grep`), with Bash/Write disallowed, so a prompt-injected PR can't alter the gate scripts in the workspace.
 - It must return a JSON object in its final message; the report module parses it from `steps.ai.outputs.execution_file`.
 

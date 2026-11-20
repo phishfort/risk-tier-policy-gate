@@ -26,7 +26,7 @@ Anything touching security-sensitive areas: auth, secrets, CI/CD, dependencies, 
 
 A second required workflow, `🔐 PhishFort Endpoint Auth Check`, flags endpoints that may expose data **without proper authentication**. It has two layers:
 - semgrep rules, run on changed lines
-- a read-only Claude review, run when route or handler code changes
+- a read-only Claude review, run when route/handler code, shared auth code or permission tables change
 
 It is **non-blocking**. Findings appear as a red **"Endpoint auth findings"** check, with inline annotations, a PR comment and the label `security:unauth-endpoint`. It does not touch `risktier:*` labels or approvals.
 
