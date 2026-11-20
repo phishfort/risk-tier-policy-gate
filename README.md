@@ -22,6 +22,16 @@ Anything touching security-sensitive areas: auth, secrets, CI/CD, dependencies, 
 
 **Low-risk** examples: docs, tests, styling, UI components (no auth logic), static assets.
 
+## Endpoint auth check (separate workflow)
+
+A second required workflow, `🔐 PhishFort Endpoint Auth Check`, flags endpoints that may expose data **without proper authentication**. It has two layers:
+- semgrep rules, run on changed lines
+- a read-only Claude review, run when route/handler code, shared auth code or permission tables change
+
+It is **non-blocking**. Findings appear as a red **"Endpoint auth findings"** check, with inline annotations, a PR comment and the label `security:unauth-endpoint`. It does not touch `risktier:*` labels or approvals.
+
+Details and false-positive handling: [`security/endpoint-auth/`](security/endpoint-auth/).
+
 ## For developers
 
 **You don't need to do anything.** If your repo is enrolled, the check runs automatically on every PR. No workflow files needed in your repo.
@@ -36,6 +46,11 @@ Anything touching security-sensitive areas: auth, secrets, CI/CD, dependencies, 
 config/risk-rules.json                    ← file patterns that auto-flag high risk
 scripts/risk-rules.mjs                    ← evaluates files against the patterns
 risk-tier-conditions.md                   ← full policy Claude reads for classification
+
+.github/workflows/endpoint-auth-required.yml ← endpoint auth check (separate required workflow)
+security/endpoint-auth/                   ← its semgrep rules + fixtures, AI review guide, e2e test
+scripts/endpoint-auth-scan.mjs            ← rules on changed lines + route-change detection
+scripts/endpoint-auth-report.cjs          ← check run, PR comment, label
 ```
 
 ## Enrolling a new repo
@@ -44,6 +59,8 @@ risk-tier-conditions.md                   ← full policy Claude reads for class
 2. Add it to the [org ruleset](https://github.com/organizations/phishfort/settings/rules/13230835) target list
 3. Ensure ruleset branch targeting includes `Default`, `main`, and `master` (for mixed repos where `develop` may be default)
 4. Done — next PR on that repo will be classified automatically
+
+**Endpoint auth check:** add `.github/workflows/endpoint-auth-required.yml` (from this repo, `refs/heads/main`) as a second required workflow in the same ruleset, or in its own ruleset with the same targets. Its job always passes, so it never blocks merges.
 
 ### Branch targeting note (important)
 
