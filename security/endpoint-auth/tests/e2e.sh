@@ -112,6 +112,15 @@ PREV=$(node -e 'const o=JSON.parse(process.argv[1]); console.log(JSON.stringify(
 OUT2=$(node "$MOCK" "$REPORT" "$RUN" none "$PREV")
 node -e 'const o=JSON.parse(process.argv[1]); if (o.final.llm_status!=="not_needed+carried"||o.final.llm.length!==1) throw new Error(o.final.llm_status)' "$OUT2" || fail "carry-forward"
 
+# ---- carry-forward still works when the gate comment is past the first page of PR comments
+PREV_LONG=$(node -e 'const o=JSON.parse(process.argv[1]); const f=[...Array(120)].map((_,i)=>({id:1000+i,body:"filler "+i,user:{login:"someone"}})); console.log(JSON.stringify([...f,{id:1,body:o.body,user:{login:"github-actions[bot]"}}]))' "$OUT")
+OUT2B=$(node "$MOCK" "$REPORT" "$RUN" none "$PREV_LONG")
+node -e '
+const o = JSON.parse(process.argv[1]);
+if (o.final.llm_status !== "not_needed+carried" || o.final.llm.length !== 1) throw new Error("carried: " + o.final.llm_status);
+if (!o.calls.includes("updateComment") || o.calls.includes("createComment")) throw new Error("should update the existing comment: " + o.calls);
+' "$OUT2B" || fail "carry-forward past page 1"
+
 # ---- a newly added nosemgrep suppression is honoured but surfaced (red check, warning annotation)
 sed -i.bak 's|const who = request.headers.get("Cf-Access-Authenticated-User-Email");|const who = request.headers.get("Cf-Access-Authenticated-User-Email"); // nosemgrep: access-identity-header-trusted -- verified upstream|' src/server.ts && rm -f src/server.ts.bak
 scan
@@ -123,6 +132,20 @@ if (!f || !f.suppressed || !f.suppression_added) throw new Error("suppression no
 if (o.final.suppression_added !== true || o.final.conclusion !== "failure") throw new Error("suppression should keep check red");
 if (!o.check.annotations.some(a => a.annotation_level === "warning" && /suppressed/.test(a.title))) throw new Error("no warning annotation");
 ' "$OUT3" || fail "nosemgrep tracking"
+
+# ---- a nosemgrep naming a different rule, or no rule, does not suppress; a list naming the rule does
+nosem() {
+  sed -i.bak -E "s|(const who = request.headers.get\(\"Cf-Access-Authenticated-User-Email\"\);).*|\1 $1|" src/server.ts && rm -f src/server.ts.bak
+  scan
+  node -e '
+const r = require(process.argv[1] + "/endpoint-auth-result.json");
+const f = r.findings.find(x => x.rule === "access-identity-header-trusted");
+if (!f || String(f.suppressed) !== process.argv[2]) throw new Error(process.argv[3] + ": suppressed=" + (f && f.suppressed));
+' "$RUN" "$2" "$1" || fail "nosemgrep rule match: $1"
+}
+nosem "// nosemgrep: some-other-rule -- unrelated" false
+nosem "// nosemgrep" false
+nosem "// nosemgrep: some-other-rule, access-identity-header-trusted -- verified upstream" true
 
 # ---- clean PR: no findings, no previous comment -> green check, no comment, no label
 git checkout -q -- src/server.ts worker/wrangler.toml 2>/dev/null || true

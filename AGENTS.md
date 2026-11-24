@@ -56,7 +56,7 @@ security/endpoint-auth/    ← its rules, fixtures, AI review guide, e2e test
 - It must return a JSON object in its final message; the report module parses it from `steps.ai.outputs.execution_file`.
 
 **Other details:**
-- Semgrep runs with `--disable-nosem`. Suppressions are tracked, never silent.
+- Semgrep runs with `--disable-nosem`. Suppressions are tracked, never silent. A `nosemgrep` counts only when it names the rule (`nosemgrep: <rule-id>[, ...]`); a bare one is ignored.
 - Permissions: `checks: write`, `pull-requests: write`, `issues: write`, `id-token: write`.
 - Enrolment: add this workflow as a required workflow in the org ruleset (same repo targets as risk tier).
 - Tests: `semgrep --test security/endpoint-auth/rules` and `security/endpoint-auth/tests/e2e.sh`; CI is `endpoint-auth-tests.yml`.

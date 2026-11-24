@@ -8,17 +8,29 @@ const comments = JSON.parse(process.argv[5] || '[]');
 let labels = [];
 const calls = [];
 let check = null;
+const MARKER = '<!-- endpoint-auth-gate -->';
+const gateComment = () => comments.find((c) => c.body.includes(MARKER));
 const github = {
+  // Like octokit's paginate: follows pages until a short one.
+  paginate: async (fn, args) => {
+    const out = [];
+    for (let page = 1; ; page++) {
+      const { data } = await fn({ ...args, page });
+      out.push(...data);
+      if (data.length < (args.per_page ?? 30)) return out;
+    }
+  },
   rest: {
     issues: {
-      listComments: async () => ({ data: comments }),
+      // Honours page/per_page, so a single-page lookup misses a comment past page 1.
+      listComments: async ({ page = 1, per_page = 30 } = {}) => ({ data: comments.slice((page - 1) * per_page, page * per_page) }),
       createComment: async (a) => {
         calls.push('createComment');
         comments.push({ id: 1, body: a.body, user: { login: 'github-actions[bot]' } });
       },
       updateComment: async (a) => {
         calls.push('updateComment');
-        comments[0].body = a.body;
+        comments.find((c) => c.id === a.comment_id).body = a.body;
       },
       listLabelsOnIssue: async () => ({ data: labels }),
       addLabels: async (a) => {
@@ -63,5 +75,5 @@ const core = {
 };
 (async () => {
   const final = await report({ github, context, core, workDir, llmExecutionFile: exec, llmRan: exec !== 'none', scanOutcome: 'success' });
-  console.log(JSON.stringify({ final, outputs, calls, body: comments[0]?.body ?? '', check, summary }));
+  console.log(JSON.stringify({ final, outputs, calls, body: gateComment()?.body ?? '', check, summary }));
 })();

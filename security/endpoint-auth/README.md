@@ -52,6 +52,7 @@ If the gate itself breaks (for example, the report step errors), the workflow lo
   ```ts
   const who = request.headers.get("Cf-Access-Authenticated-User-Email"); // nosemgrep: access-identity-header-trusted -- JWT verified in middleware.ts
   ```
+  The suppression must name the rule (several: `nosemgrep: rule-a, rule-b`). A bare `nosemgrep`, or one naming a different rule, suppresses nothing.
   Suppressions are never silent. The push that adds one turns the check red once and shows the reason, so a reviewer can confirm it. After that it is listed under "Suppressed findings".
 - **AI findings:** advisory. A reviewer checks them and merges.
 

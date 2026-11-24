@@ -126,7 +126,8 @@ module.exports = async function report({ github, context, core, workDir = '.', l
   const scannerError = det ? det.scanner_error : `rules scan did not produce a result (step outcome: ${scanOutcome || 'unknown'})`;
 
   // ---- existing comment (also carries forward the previous AI review)
-  const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number, per_page: 100 });
+  // Paginated: on long PRs the gate comment can sit past the first page.
+  const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
   const existing = comments.find((c) => c.body.includes(MARKER) && c.user.login === 'github-actions[bot]');
 
   let llmStatus = 'not_needed';
@@ -289,7 +290,7 @@ module.exports = async function report({ github, context, core, workDir = '.', l
   }
 
   // ---- label
-  const { data: labels } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number });
+  const labels = await github.paginate(github.rest.issues.listLabelsOnIssue, { owner, repo, issue_number, per_page: 100 });
   const hasLabel = labels.some((l) => l.name === LABEL);
   if (securityHigh && !hasLabel) await github.rest.issues.addLabels({ owner, repo, issue_number, labels: [LABEL] });
   else if (!securityHigh && hasLabel) await github.rest.issues.removeLabel({ owner, repo, issue_number, name: LABEL }).catch(() => {});

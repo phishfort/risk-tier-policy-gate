@@ -139,17 +139,26 @@ if (!scannerError && codeFiles.length > 0) {
         }
         if (new RegExp(src, flags).test(fileText(file))) continue;
       }
-      // Inline `nosemgrep` suppressions are honoured but never silent: the finding is
-      // kept as `suppressed`, and a suppression ADDED by this PR forces human review.
+      // Inline `nosemgrep: <rule-id>[, <rule-id>] [-- reason]` suppressions are honoured but never
+      // silent: the finding is kept as `suppressed`, and a suppression ADDED by this PR forces
+      // human review. Only a directive naming THIS rule counts; a bare `nosemgrep` does not.
+      const checkId = String(res.check_id);
+      const rule = checkId.split('.').pop();
       const srcLines = fileText(file).split('\n');
-      const supLine = [res.start.line, res.start.line - 1, res.end.line].find((l) => /nosemgrep/i.test(srcLines[l - 1] ?? ''));
+      const namesRule = (l) => {
+        const m = /nosemgrep\s*:\s*([^\n]*)/i.exec(srcLines[l - 1] ?? '');
+        if (!m) return false;
+        const ids = m[1].split('--')[0].replace(/\*\/|-->/g, ' ').split(/[\s,]+/).filter(Boolean);
+        return ids.some((id) => id === rule || id === checkId || checkId.endsWith(`.${id}`));
+      };
+      const supLine = [res.start.line, res.start.line - 1, res.end.line].find(namesRule);
       const suppressed = supLine !== undefined;
       findings.push({
         source: 'rule',
         suppressed,
         suppression_added: suppressed && a.lines.has(supLine),
         suppression_reason: suppressed ? (srcLines[supLine - 1].split(/nosemgrep:?/i)[1] ?? '').trim().slice(0, 200) : undefined,
-        rule: String(res.check_id).split('.').pop(),
+        rule,
         gate: meta.gate === 'high' ? 'high' : 'info',
         category: meta.category ?? 'endpoint-auth',
         file,
