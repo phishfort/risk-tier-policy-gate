@@ -245,11 +245,11 @@ app.get("/v1/things", listThings);
 export default app;
 TS
 printf 'export default function handler(req, res) {\n  console.log("report");\n  res.json({ ok: true });\n}\n' > pages/api/report.ts
-printf '// requireUser is checked upstream\nexport const fmt = (s: string) => {\n  logger.info("fmt");\n  return s.trim();\n};\n' > src/util/format.ts
+printf '// requireUser is checked upstream\nexport const fmt = (s: string) => {\n  logger.info("fmt");\n  return s.trim();\n};\nexport const doc = `\n| scope_violation | 403 | outside your tree |\n`;\n' > src/util/format.ts
 git add . && git commit -qm delbase
 git checkout -q -b delpr
 sed -i.bak '/app.use(requireUser);/d' src/app/server.ts && sed -i.bak '/console.log/d' pages/api/report.ts
-sed -i.bak -e '/requireUser is checked/d' -e '/logger.info/d' src/util/format.ts && rm -f src/app/server.ts.bak pages/api/report.ts.bak src/util/format.ts.bak
+sed -i.bak -e '/requireUser is checked/d' -e '/logger.info/d' -e '/scope_violation/d' src/util/format.ts && rm -f src/app/server.ts.bak pages/api/report.ts.bak src/util/format.ts.bak
 git commit -qam delpr
 MB7=$(git merge-base delbase HEAD); git diff --name-only "$MB7" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
 MB="$MB7" scan

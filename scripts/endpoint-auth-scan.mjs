@@ -276,7 +276,7 @@ const AUTH_CHECK_LINE = new RegExp(
     String.raw`\b(require|ensure|check|assert|verify|validate|is|has|with)_?(user|auth\w*|admin|owner|role|scope|permission|session|token|jwt|api_?key|signature|login|logged_?in|signed_?in|access|current_?user)`,
     String.raw`\bauth\w*\s*\(|\b\w*(authenticat|authori[sz])\w*`,
     String.raw`\b(jwt|jose|passport)\.\w+|\bjwtVerify\b|@UseGuards\b|\bDepends\s*\(|\b(login|permission|role|admin)_required\b|\bget_?(server_?session|current_?user)\b`,
-    String.raw`\b(401|403)\b|\b(Unauthori[sz]ed|Forbidden)\b|\b(req|request|ctx|c)\.(user|auth|session)\b`,
+    String.raw`(status\w*\s*[:=(]\s*|[(,]\s*)(401|403)\b|\b(Unauthori[sz]ed|Forbidden)\b|\b(req|request|ctx|c)\.(user|auth|session)\b`,
   ].join('|'),
   'i',
 );
