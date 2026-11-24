@@ -239,16 +239,22 @@ const ROUTE_LINE = [
   /\b(server|mcp|agent)\.(tool|registerTool|resource|prompt)\s*\(/,
   /\bnew\s+Hono\s*\(|\bexpress\s*\(\s*\)|\bRouter\s*\(\s*\)|\bFastAPI\s*\(|\bAPIRouter\s*\(|\bFlask\s*\(/,
   ROUTE_TABLE,
-  // Route objects: { method: 'GET', path: '/x' } / { path: '/x', method: 'GET' }
+];
+// Route objects: { method: 'GET', path: '/x' } / { path: '/x', method: 'GET' }
+const ROUTE_OBJECT = [
   /\bmethods?\s*:\s*\[?\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|ALL)['"`][^}]*\b(path|url|route|pattern)\s*:/i,
   /\b(path|url|route|pattern)\s*:\s*['"`]\/[^'"`]*['"`]\s*,[^}]*\bmethods?\s*:/i,
 ];
+// ...unless passed to an outbound HTTP client: apiRequest(env, { method: 'GET', path }), fetch(url, { method }), axios({ method, url })
+const OUTBOUND_CALL = /\b\w*(request|fetch|client|axios)\s*\(\s*([\w.$]+\s*,\s*)?\{[^}]*\bmethods?\s*:/i;
+const isRouteLine = (l) =>
+  ROUTE_LINE.some((re) => re.test(l)) || (ROUTE_OBJECT.some((re) => re.test(l)) && !OUTBOUND_CALL.test(l));
 const ROUTE_PATH = /(^|\/)(pages\/api\/|app\/(.*\/)?route\.[cm]?[jt]sx?$)/;
 const routeFilesFull = [];
 for (const file of codeFiles) {
   const a = added.get(file);
   if (!a || a.text.length === 0) continue;
-  if (ROUTE_PATH.test(file) || a.text.some((l) => ROUTE_LINE.some((re) => re.test(l))) || ROUTE_TABLE.test(a.text.join('\n')))
+  if (ROUTE_PATH.test(file) || a.text.some(isRouteLine) || ROUTE_TABLE.test(a.text.join('\n')))
     routeFilesFull.push(file);
 }
 

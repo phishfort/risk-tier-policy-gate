@@ -148,20 +148,25 @@ MB3=$(git merge-base main HEAD); git diff --name-only "$MB3" HEAD > "$RUN/full-c
 MB="$MB3" scan
 node -e 'const r=require(process.argv[1]+"/endpoint-auth-result.json"); if(!r.findings.some(f=>f.file==="src/evade.ts")) throw new Error("ruleid comment hid a finding")' "$RUN" || fail "fixture-skip bypass"
 
-# ---- route tables count as route changes (AI review triggers); outbound fetch() calls do not
+# ---- route tables + route objects count as route changes (AI review triggers); outbound client calls do not
 git checkout -q -b table main && mkdir -p src/api && cat > src/api/routes.js <<'JS'
 export const routes = [
   ['GET', /^\/v1\/things$/, listThings],
   ['POST', /^\/v1\/things\/([^/]+)\/share$/, shareThing, { public: true }],
 ];
 JS
+cat > src/api/objroutes.js <<'JS'
+export const objRoutes = [{ method: 'GET', path: '/v1/widgets', handler: listWidgets }];
+JS
 cat > src/api/client.js <<'JS'
 export const load = (url) => fetch(url, { method: "GET", headers: {} });
+export const getThing = (env, id) => apiRequest(env, { method: 'GET', path: `/v1/things/${id}` });
+export const post = (body) => axios({ method: 'POST', url: '/v1/things', data: body });
 JS
 git add . && git commit -qm table
 MB4=$(git merge-base main HEAD); git diff --name-only "$MB4" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
 MB="$MB4" scan
-node -e 'const r=require(process.argv[1]+"/endpoint-auth-result.json"); if(JSON.stringify(r.route_files_full)!=="[\"src/api/routes.js\"]") throw new Error("route table detection: "+r.route_files_full)' "$RUN" || fail "route table"
+node -e 'const r=require(process.argv[1]+"/endpoint-auth-result.json"); const got=JSON.stringify([...r.route_files_full].sort()); if(got!=="[\"src/api/objroutes.js\",\"src/api/routes.js\"]") throw new Error("route table/object detection: "+got)' "$RUN" || fail "route table"
 
 # ---- formatter-wrapped route-table entries (bracket, method and pattern on separate lines)
 git checkout -q -b wrapped main && mkdir -p src/api && cat > src/api/routes.js <<'JS'
