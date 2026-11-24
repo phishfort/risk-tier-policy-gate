@@ -22,6 +22,8 @@ Count anything reachable over the network that runs code on request:
 - Report each endpoint that loses protection, using the changed line in the auth file as `file:line` when there is no single handler.
 - A change that keeps or tightens protection needs no entry.
 
+`auth_check_removed` lists files where the PR deletes or changes a line that looks like an auth check (middleware registration, guard, token/session check, 401/403 branch). Check whether every endpoint that check protected is still protected some other way, and report each one that is not.
+
 ## Auth levels
 
 | `auth` | Meaning |

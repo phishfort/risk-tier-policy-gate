@@ -67,11 +67,17 @@ function addedLines(base, files) {
     maxBuffer: 256 * 1024 * 1024,
   });
   if (r.status !== 0) throw new Error(`git diff failed: ${r.stderr}`);
+  // `text` = added lines, `removed` = deleted lines (a changed line appears in both).
   let cur = null;
+  let inHunk = false; // +/- lines before the first @@ are file headers
   for (const line of r.stdout.split('\n')) {
-    if (line.startsWith('+++ ')) {
+    if (line.startsWith('diff --git ')) {
+      inHunk = false;
+      continue;
+    }
+    if (!inHunk && line.startsWith('+++ ')) {
       cur = line.startsWith('+++ b/') ? line.slice(6) : null;
-      if (cur && !map.has(cur)) map.set(cur, { lines: new Set(), text: [] });
+      if (cur && !map.has(cur)) map.set(cur, { lines: new Set(), text: [], removed: [] });
       continue;
     }
     const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
@@ -79,9 +85,12 @@ function addedLines(base, files) {
       const start = Number(h[1]);
       const count = h[2] === undefined ? 1 : Number(h[2]);
       for (let i = 0; i < count; i++) map.get(cur).lines.add(start + i);
+      inHunk = true;
       continue;
     }
-    if (cur && line.startsWith('+') && !line.startsWith('+++')) map.get(cur).text.push(line.slice(1));
+    if (!inHunk || !cur) continue;
+    if (line.startsWith('+')) map.get(cur).text.push(line.slice(1));
+    else if (line.startsWith('-')) map.get(cur).removed.push(line.slice(1));
   }
   return map;
 }
@@ -259,11 +268,28 @@ const OUTBOUND_CALL = /\b\w*(request|fetch|client|axios)\s*\(\s*([\w.$]+\s*,\s*)
 const isRouteLine = (l) =>
   ROUTE_LINE.some((re) => re.test(l)) || (ROUTE_OBJECT.some((re) => re.test(l)) && !OUTBOUND_CALL.test(l));
 const ROUTE_PATH = /(^|\/)(pages\/api\/|app\/(.*\/)?route\.[cm]?[jt]sx?$)/;
+// Removed auth checks: deleting `app.use(requireUser)`, `if (!req.user) return 401` or a guard
+// decorator adds no route line but can make existing endpoints public. A deleted (or changed)
+// line that looks like an auth check puts the file in scope. Comments and imports don't count.
+const AUTH_CHECK_LINE = new RegExp(
+  [
+    String.raw`\b(require|ensure|check|assert|verify|validate|is|has|with)_?(user|auth\w*|admin|owner|role|scope|permission|session|token|jwt|api_?key|signature|login|logged_?in|signed_?in|access|current_?user)`,
+    String.raw`\bauth\w*\s*\(|\b\w*(authenticat|authori[sz])\w*`,
+    String.raw`\b(jwt|jose|passport)\.\w+|\bjwtVerify\b|@UseGuards\b|\bDepends\s*\(|\b(login|permission|role|admin)_required\b|\bget_?(server_?session|current_?user)\b`,
+    String.raw`\b(401|403)\b|\b(Unauthori[sz]ed|Forbidden)\b|\b(req|request|ctx|c)\.(user|auth|session)\b`,
+  ].join('|'),
+  'i',
+);
+const NOT_CODE = /^\s*(\/\/|\/\*|\*|#|import\b|from\s+\S+\s+import\b|$)|^\s*(const|let|var)\s+[^=]+=\s*require\s*\(\s*['"][^'"]+['"]\s*\)\s*;?\s*$/;
+const isAuthCheckLine = (l) => !NOT_CODE.test(l) && AUTH_CHECK_LINE.test(l);
 const routeFilesFull = [];
+const authCheckRemoved = [];
 for (const file of codeFiles) {
   const a = added.get(file);
-  if (!a || a.text.length === 0) continue;
-  if (ROUTE_PATH.test(file) || a.text.some(isRouteLine) || ROUTE_TABLE.test(a.text.join('\n')))
+  if (!a) continue;
+  const removesAuth = a.removed.some(isAuthCheckLine);
+  if (removesAuth) authCheckRemoved.push(file);
+  if (ROUTE_PATH.test(file) || removesAuth || a.text.some(isRouteLine) || ROUTE_TABLE.test(a.text.join('\n')))
     routeFilesFull.push(file);
 }
 
@@ -309,6 +335,7 @@ const result = {
   route_files_full: routeFilesFull,
   route_files_increment: routeFilesIncrement,
   auth_files: authFiles,
+  auth_check_removed: authCheckRemoved,
 };
 fs.writeFileSync(args.out, JSON.stringify(result, null, 2));
 
@@ -322,7 +349,8 @@ if (ghOut) {
 }
 console.log(
   `endpoint-auth scan: ${codeFiles.length} code files, ${findings.length} findings (${highCount} high), ` +
-    `${routeFilesFull.length} route files (${routeFilesIncrement.length} in this push; ${authFiles.length} auth/permission)` +
+    `${routeFilesFull.length} route files (${routeFilesIncrement.length} in this push; ${authFiles.length} auth/permission; ` +
+    `${authCheckRemoved.length} with removed auth checks)` +
     (scannerError ? ` — SCANNER ERROR: ${scannerError}` : ''),
 );
 for (const f of findings) console.log(`  [${f.gate}] ${f.rule} ${f.file}:${f.line}`);

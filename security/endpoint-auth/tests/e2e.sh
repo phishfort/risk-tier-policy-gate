@@ -234,4 +234,30 @@ const diff = fs.readFileSync(process.argv[1] + "/endpoint-auth-diff.patch", "utf
 if (!diff.includes("-  if (!key) return false;") || !diff.includes("viewer")) throw new Error("auth diff missing for the AI reviewer");
 ' "$RUN" || fail "auth files"
 
+# ---- deletion-only edits: a removed auth check (or any edit to a route-path file) is in scope
+git checkout -q -b delbase main && mkdir -p src/app src/util pages/api
+cat > src/app/server.ts <<'TS'
+import express from "express";
+import { requireUser } from "./checks";
+const app = express();
+app.use(requireUser);
+app.get("/v1/things", listThings);
+export default app;
+TS
+printf 'export default function handler(req, res) {\n  console.log("report");\n  res.json({ ok: true });\n}\n' > pages/api/report.ts
+printf '// requireUser is checked upstream\nexport const fmt = (s: string) => {\n  logger.info("fmt");\n  return s.trim();\n};\n' > src/util/format.ts
+git add . && git commit -qm delbase
+git checkout -q -b delpr
+sed -i.bak '/app.use(requireUser);/d' src/app/server.ts && sed -i.bak '/console.log/d' pages/api/report.ts
+sed -i.bak -e '/requireUser is checked/d' -e '/logger.info/d' src/util/format.ts && rm -f src/app/server.ts.bak pages/api/report.ts.bak src/util/format.ts.bak
+git commit -qam delpr
+MB7=$(git merge-base delbase HEAD); git diff --name-only "$MB7" HEAD > "$RUN/full-changed-files.txt" && cp "$RUN/full-changed-files.txt" "$RUN/changed-files.txt"
+MB="$MB7" scan
+node -e '
+const r = require(process.argv[1] + "/endpoint-auth-result.json");
+const full = JSON.stringify([...r.route_files_full].sort());
+if (full !== "[\"pages/api/report.ts\",\"src/app/server.ts\"]") throw new Error("route_files_full: " + full);
+if (JSON.stringify(r.auth_check_removed) !== "[\"src/app/server.ts\"]") throw new Error("auth_check_removed: " + r.auth_check_removed);
+' "$RUN" || fail "deletion-only edits"
+
 echo "endpoint-auth e2e: OK"
