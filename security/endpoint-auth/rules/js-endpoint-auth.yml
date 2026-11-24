@@ -1,0 +1,176 @@
+# Endpoint auth gate — JavaScript / TypeScript rules.
+#
+# Each rule targets a common auth anti-pattern (frequent in fast-moving and AI-assisted code):
+# endpoints that are public by accident because auth trusts a spoofable header,
+# only checks that a header is *present*, or silently turns itself off when a
+# secret is missing.
+#
+# metadata.gate:
+#   high -> forces `risktier:high` + `security:unauth-endpoint` label
+#   info -> PR comment only
+#
+# Suppress a reviewed false positive inline with:  // nosemgrep: <rule-id> -- <reason>
+
+rules:
+  - id: access-jwt-presence-only
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Auth treats the mere *presence* of the `$H` header as proof of identity.
+      Anyone can send that header with any value. Verify the JWT instead
+      (signature against your Cloudflare Access team certs + `aud` + `exp`),
+      e.g. with `jose.jwtVerify` and `createRemoteJWKSet`.
+    metadata:
+      gate: high
+      category: spoofable-auth
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if ($R.headers.get("$H")) { ... return true; }
+          - pattern: |
+              if ($R.header("$H")) { ... return true; }
+          - pattern: |
+              const $T = $R.headers.get("$H");
+              ...
+              if ($T) { ... return true; }
+          - pattern: |
+              const $T = $R.header("$H");
+              ...
+              if ($T) { ... return true; }
+          - pattern: return !!$R.headers.get("$H");
+          - pattern: return $R.headers.has("$H");
+      - metavariable-regex:
+          metavariable: $H
+          regex: (?i)^cf-access-jwt-assertion$
+
+  - id: access-identity-header-trusted
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      Identity is read from the `$H` request header. That header is only
+      trustworthy if every request passes through the identity proxy (e.g.
+      Cloudflare Access) AND the proxy's JWT is verified in code. If this service is
+      also reachable another way (`*.workers.dev`, `*.pages.dev` previews, a direct
+      Cloud Run/origin URL), anyone can set the header to any user's email.
+      Verify `Cf-Access-Jwt-Assertion` (signature + aud) and read the email from
+      the verified claims instead.
+    metadata:
+      gate: high
+      category: spoofable-auth
+      # The scanner drops this finding when the same file also verifies a JWT
+      # (jwtVerify / createRemoteJWKSet / verifyAccess...).
+      suppress_if_file_matches: '(?i)(jwtVerify|createRemoteJWKSet|verifyAccess\w*Jwt|verifyAccess\w*Token|verifyCfAccess|jwt\.verify\(|getIdentity\()'
+    patterns:
+      - pattern-either:
+          - pattern: $R.headers.get("$H")
+          - pattern: $R.header("$H")
+          - pattern: $R.headers["$H"]
+          - pattern: $R.get("$H")
+      - metavariable-regex:
+          metavariable: $H
+          regex: (?i)^(cf-access-authenticated-user-email|x-goog-authenticated-user-email|x-forwarded-email|x-forwarded-user|x-auth-request-email|x-user-email)$
+
+  - id: auth-fails-open-when-secret-unset
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      Auth is skipped when `$K` is empty or unset. A missing or mistyped secret then
+      silently makes this endpoint public. Fail closed: if the secret is not
+      configured, return 401/500, and never `return true` / `next()` without
+      checking a credential.
+    metadata:
+      gate: high
+      category: fail-open
+    patterns:
+      - pattern-either:
+          - pattern: |
+              if (!$K) { ... return true; }
+          - pattern: |
+              if (!$K) { ... return next(); }
+          - pattern: |
+              if (!$K) { ... return await next(); }
+          - pattern: |
+              if ($K && $X !== $K) { ... }
+          - pattern: |
+              if ($K && $X != $K) { ... }
+          - pattern: |
+              if ($K && !$CMP($X, $K)) { ... }
+      # $K must look like a *configured* secret (env binding / process.env / UPPER_CASE
+      # constant), not a value taken from the request.
+      - metavariable-regex:
+          metavariable: $K
+          regex: '^(?:(?:[A-Za-z_$][\w$]*\.)*env\.[A-Za-z_$][\w$]*|(?:this|self|config|settings)\.[A-Z][A-Z0-9_]*|[A-Z][A-Z0-9_]*)$'
+      - metavariable-regex:
+          metavariable: $K
+          regex: '^(?!.*(?:_FILE|_PATH|_DIR|_ID|_IDS|_NAME|_URL|_URI|_ENV|_HEADER|_LABEL|_TTL|_PREFIX)$).*?((?i:(?<![a-z])(?:api_?key|key|token|secret|password|passwd)s?(?![a-z]))|(?<=[a-z])(?:Key|Token|Secret|Password)s?(?![a-z])).*$'
+
+  - id: hardcoded-secret-fallback
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      `$K` falls back to a hardcoded literal when the env var is unset. Anyone with
+      read access to this repo (or its git history) knows that value, and it becomes
+      the live credential whenever the env var is missing. Remove the fallback, fail
+      closed, and rotate the literal if it was ever used.
+    metadata:
+      gate: high
+      category: hardcoded-credential
+    patterns:
+      - pattern-either:
+          - pattern: process.env.$K || "$LIT"
+          - pattern: process.env.$K ?? "$LIT"
+          - pattern: $E.env.$K || "$LIT"
+          - pattern: $E.env.$K ?? "$LIT"
+      - metavariable-regex:
+          metavariable: $K
+          regex: '^(?!.*(?:_FILE|_PATH|_DIR|_ID|_IDS|_NAME|_URL|_URI|_ENV|_HEADER|_LABEL|_TTL|_PREFIX)$).*?((?i:(?<![a-z])(?:api_?key|key|token|secret|password|passwd)s?(?![a-z]))|(?<=[a-z])(?:Key|Token|Secret|Password)s?(?![a-z])).*$'
+      # Literal must look like a credential: >=16 chars, has a digit or mixed case,
+      # not a path / file name / resource id.
+      - metavariable-regex:
+          metavariable: $LIT
+          regex: '^(?![./~])(?!.*\.(?:json|txt|db|sqlite|pem|key|ya?ml|toml|log)$)(?=.*[A-Za-z])(?:(?=.*[0-9])|(?=.*[a-z])(?=.*[A-Z]))[A-Za-z0-9_\-+/=.]{16,}$'
+
+  - id: bearer-compare-against-unset-secret
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      The expected header is built with a template literal from `$E.$K`. If the
+      secret is ever unset, the expected value becomes the string "Bearer undefined",
+      which any caller can send. Check that the secret is non-empty first (fail closed)
+      and compare in constant time.
+    metadata:
+      gate: high
+      category: fail-open
+    pattern-either:
+      - pattern: $X === `Bearer ${$E.$K}`
+      - pattern: $X !== `Bearer ${$E.$K}`
+      - pattern: $X == `Bearer ${$E.$K}`
+      - pattern: $X != `Bearer ${$E.$K}`
+
+  - id: http-cloud-function-without-auth
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      This HTTP Cloud Function handler never reads a credential from the request
+      (no header / API key / ID-token / signature check). If it is deployed with a
+      public invoker (`allUsers`, `--allow-unauthenticated`, or the Firebase default
+      for v1 functions), anyone on the internet can call it. Add an auth check, or
+      restrict the invoker to a service account (OIDC).
+    metadata:
+      gate: high
+      category: missing-auth
+    patterns:
+      - pattern-either:
+          - pattern: $F.https.onRequest($HANDLER)
+          - pattern: onRequest($HANDLER)
+          - pattern: onRequest($OPTS, $HANDLER)
+      - metavariable-pattern:
+          metavariable: $HANDLER
+          pattern-either:
+            - pattern: (...) => { ... }
+            - pattern: async (...) => { ... }
+            - pattern: function (...) { ... }
+            - pattern: async function (...) { ... }
+      - metavariable-regex:
+          metavariable: $HANDLER
+          regex: (?is)^(?!.*((req|request)\s*\.\s*(headers|get\s*\(|header\s*\()|verifyIdToken|authorization|x-api-key|apikey|api_key|bearer|signature|isAuth\w*\s*\(|authenticate\w*\s*\(|authori[sz]e\w*\s*\(|requireAuth|checkAuth|verifyRequest|verifyToken|validateToken)).*$

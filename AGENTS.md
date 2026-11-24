@@ -11,6 +11,9 @@ risk-tier-required.yml  ← org-level required workflow (the main entrypoint)
 config/risk-rules.json  ← deterministic pattern rules (high-risk file globs)
 scripts/risk-rules.mjs  ← evaluates changed files against risk-rules.json
 risk-tier-conditions.md ← policy doc Claude reads for non-deterministic classification
+
+endpoint-auth-required.yml ← separate endpoint auth check (see "Endpoint Auth Check" below)
+security/endpoint-auth/    ← its rules, fixtures, AI review guide, e2e test
 ```
 
 **Flow:** deterministic rules run first → if forced_high, label immediately → otherwise Claude classifies → if no Claude token, fallback to high → finally, auto-approve low-risk PRs or dismiss bot approvals and request reviews from write-access collaborators for high-risk PRs.
@@ -27,6 +30,36 @@ risk-tier-conditions.md ← policy doc Claude reads for non-deterministic classi
 **Merge blocking:** The `org-level-risk-tier` ruleset requires 1 PR review. The workflow auto-approves `risktier:low` PRs via bot review. `risktier:high` PRs auto-request reviews from collaborators with write access and require human review.
 
 **Review requests:** On high-risk PRs, the workflow calls `repos.listCollaborators` with `permission: push` to find eligible reviewers (excluding the PR author). Team-based review requests (`team_reviewers`) don't work because the `GITHUB_TOKEN` can't resolve org team slugs (403/422).
+
+## Endpoint Auth Check (separate workflow)
+
+`.github/workflows/endpoint-auth-required.yml` is a **second** org-injected required workflow, deliberately separate from the risk tier workflow so its failures are easy to spot. It never touches `risktier:*` labels or approvals.
+
+**How it runs:**
+- The job **always passes** (every step is `continue-on-error`), so it never blocks merges.
+- Results go to a separate check run, `Endpoint auth findings`, created with `checks.create` against the PR head SHA:
+  - ❌ failure: findings, a newly added `nosemgrep`, or the rules could not run
+  - ⚪ neutral: the AI review failed
+  - ✅ success: nothing to report
+- The check run carries inline annotations. Findings also produce a PR comment (marker `<!-- endpoint-auth-gate -->`, which carries the previous AI findings in base64) and the label `security:unauth-endpoint`.
+
+**Workspace layout:**
+- The PR **head** is checked out at the workspace root.
+- `rm -rf .endpoint-auth-gate` runs first, so a PR can't plant a same-named dir; then this repo is checked out into `.endpoint-auth-gate/`.
+- All working files go in `.endpoint-auth-gate/run/`.
+- The scan diffs **merge-base → working tree**, so line numbers match the PR head. That is required for annotations.
+
+**AI step (`claude-code-action`):**
+- Runs only when this push touches route/handler files (incl. route-table entries, even formatter-wrapped) or shared auth code / permission tables (`auth_files`: auth, middleware, session, guard, permission, policy, rbac, acl), or deletes/changes an auth-check-looking line in any code file (`auth_check_removed`). Body-only edits that add code to an existing handler do not trigger it.
+- The report writes every AI-assessed endpoint (incl. `ok`) to the run's job summary, so a green result is auditable without PR comments.
+- Tools are read-only (`Read,Glob,Grep`), with Bash/Write disallowed, so a prompt-injected PR can't alter the gate scripts in the workspace.
+- It must return a JSON object in its final message; the report module parses it from `steps.ai.outputs.execution_file`.
+
+**Other details:**
+- Semgrep runs with `--disable-nosem`. Suppressions are tracked, never silent. A `nosemgrep` counts only when it names the rule (`nosemgrep: <rule-id>[, ...]`); a bare one is ignored.
+- Permissions: `checks: write`, `pull-requests: write`, `issues: write`, `id-token: write`.
+- Enrolment: add this workflow as a required workflow in the org ruleset (same repo targets as risk tier).
+- Tests: `semgrep --test security/endpoint-auth/rules` and `security/endpoint-auth/tests/e2e.sh`; CI is `endpoint-auth-tests.yml`.
 
 ## Org Ruleset Setup
 
